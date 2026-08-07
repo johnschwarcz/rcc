@@ -1,0 +1,289 @@
+# rcc
+
+PyTorch modules implementing **Representation Classification Chains**, the
+architecture from *Factorization Regret mediates compositional generalization in
+latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
+
+A chain separates what the world is *made of* from what is happening *right
+now*. One pathway learns how latent variables interact, trained only by how well
+it predicts observations. A second reads that representation to infer which
+variables are currently active and what values they hold. The two share a
+forward pass and no gradient.
+
+<img src="docs/images/architecture.png" width="100%">
+
+Every stage is a plain `nn.Module` that takes and returns tensors. There is no
+dependency on any particular environment, and no training loop to adopt.
+
+## Install
+
+```bash
+pip install git+https://github.com/johnschwarcz/rcc
+```
+
+For the figures, add the `viz` extra:
+
+```bash
+pip install "rcc[viz] @ git+https://github.com/johnschwarcz/rcc"
+```
+
+Requires Python 3.10+ and PyTorch 2.2+.
+
+## Quick start
+
+```python
+import torch
+from rcc import RCC, RCCConfig
+
+cfg = RCCConfig(n_vars=50, n_contexts=2, n_realizations=4,
+                n_observations=3, hidden_dim=32)
+chain = RCC(cfg)
+
+observations = torch.rand(16, 10, 3).round()      # (episodes, steps, channels)
+var_ids = torch.randint(0, 50, (16, 2))           # which variables are active
+
+belief, interaction = chain(observations, var_ids)
+belief.shape        # (16, 10, 2, 4) — episodes, steps, variables, realizations
+```
+
+`belief[e, t, c, r]` is how strongly the chain believes, after `t` observations
+in episode `e`, that active variable `c` has realization `r`.
+
+## The four stages
+
+| Stage | Module | Reads | Produces |
+| --- | --- | --- | --- |
+| 1. Representation | `InteractionEncoder` | `var_ids` | one interaction per ordered pair of active variables, per channel |
+| 2. Classification | `BeliefClassifier` | observations, interactions | a belief over each active variable's realization |
+| 3. Generation | `ObservationGenerator` | a realization, interactions | predicted observation rates |
+| 4. Control | `Controller` | interactions | a distribution over joint realizations |
+
+Stage 1 holds a key and a query embedding per variable per channel. Two active
+variables interact through the dot product of one's key with the other's query,
+and since that product is asymmetric a pair contributes two numbers rather than
+one. Those numbers are all that stages 2–4 ever learn about how variables
+combine.
+
+Stage 2's readout does not emit a belief. It emits an *increment*, and the belief
+is `softmax(cumsum(increments))`. A softmax over a sum of logits is a product of
+likelihood ratios, so the network accumulates evidence multiplicatively while
+only having to learn one step of it. Nothing forces the result to be Bayesian;
+the architecture makes the Bayesian solution the easy one to represent.
+
+## The seam
+
+`BeliefClassifier` detaches the interactions it is given. Classification error
+cannot travel back into the representation, so what the chain represents is
+shaped only by how well it predicts the world — never by what happens to make
+classification easier. This is a property of the gradient graph, and it is
+[tested as one](tests/test_chain.py).
+
+The parameter groups follow the same split, which is what lets each objective
+have its own optimizer:
+
+```python
+estimation = torch.optim.Adam(chain.estimation_parameters(), lr=1e-3)  # stages 1, 3
+inference  = torch.optim.Adam(chain.inference_parameters(),  lr=1e-3)  # stage 2
+control    = torch.optim.Adam(chain.control_parameters(),    lr=1e-3)  # stage 4
+```
+
+The embeddings live in the *estimation* group, not with the classifier that
+consumes them. The three groups partition the chain exactly.
+
+## Configuration
+
+`RCCConfig` is frozen and validated on construction. Field names match
+[coggrid](https://github.com/johnschwarcz/coggrid), so the two can be read side
+by side.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `n_vars` | `500` | Size of the latent variable pool. Stage 1 holds one key and one query embedding per variable per channel. |
+| `n_contexts` | `2` | Number of simultaneously active latent variables. Drives the controller's action space, which is `n_realizations ** n_contexts`. |
+| `n_realizations` | `10` | Number of discrete values each active variable can take. |
+| `n_observations` | `5` | Number of binary observation channels. |
+| `embedding_dim` | `30` | Dimensionality of the key/query embeddings that are contracted into interactions. |
+| `hidden_dim` | `1000` | Width of every hidden layer, and of the recurrent state. |
+| `recurrent` | `True` | Whether the classifier integrates observations one step at a time. `False` gives it only the observation mean, and a belief constant over time. |
+| `reservoir` | `False` | Whether to freeze the recurrent weights at initialization. The readin, readout and initial states still train. Requires `recurrent=True`. |
+| `learn_embeddings` | `True` | Whether stage 1's embeddings are learned. `False` requires you to supply them, which isolates the classifier by handing it a perfect representation. |
+| `seed` | `None` | Seed for parameter initialization. `None` means non-reproducible. Seeding restores the global RNG afterwards, so it will not disturb your own stream. |
+
+Two of coggrid's fields are deliberately absent. `n_steps` and `n_episodes` are
+read from the shape of the tensor each module is handed, so storing them would
+create a second source of truth that could disagree with the data.
+
+Derived properties: `n_interactions`, `realization_shape`,
+`n_joint_realizations`, `classifier_input_dim`.
+
+## Objectives
+
+Nothing is wired into a module. Choosing objectives is how you choose what the
+chain is being asked to do.
+
+| Function | Trains | Needs |
+| --- | --- | --- |
+| `distillation_loss(belief, target)` | stage 2 | a belief you already trust |
+| `reward_loss(goal_belief, selection, correct)` | stage 2 | only whether the committed answer was right |
+| `prediction_loss(predicted_rates, observed_rates)` | stages 1, 3 | nothing — the observations are their own target |
+| `embedding_norm_penalty(keys, queries)` | stage 1 | nothing |
+| `controller_loss(value, predicted_value, log_prob, entropy)` | stage 4 | a value for the action taken |
+
+`reward_loss` is the one that makes the paper's claim testable: the chain commits
+to an answer, is told only whether it was right, and that single bit is applied
+to the belief in that answer at every step.
+
+`prediction_loss` optionally takes `correct` and `chance`, which blend the
+unconditional average with the average over episodes the chain got right. While
+the chain is guessing, "the episodes it got right" is not a meaningful subset;
+as it improves, those are the episodes whose proposed realization was worth
+predicting from.
+
+## Using your own task
+
+The chain needs exactly two tensors, and neither carries any assumption about
+where they came from:
+
+| Argument | Shape | Meaning |
+| --- | --- | --- |
+| `observations` | `(n_episodes, n_steps, n_observations)` | binary observations over time |
+| `var_ids` | `(n_episodes, n_contexts)` | which variables are active, as indices into the pool |
+
+Anything with a pool of discrete latent variables, a stream of binary
+observations, and a question about one of those variables will fit. A training
+step, in full:
+
+```python
+from rcc import RCC, RCCConfig, distillation_loss
+
+chain = RCC(RCCConfig(n_vars=50, n_contexts=2, n_realizations=4,
+                      n_observations=3, hidden_dim=32))
+optimizer = torch.optim.Adam(chain.inference_parameters(), lr=1e-3)
+
+belief, interaction = chain(observations, var_ids)
+loss = distillation_loss(belief, target_belief)
+optimizer.zero_grad()
+loss.backward()
+optimizer.step()
+```
+
+Stages are independent modules, so you can take one without the rest:
+
+```python
+from rcc import BeliefClassifier
+
+classifier = BeliefClassifier(cfg)
+belief = classifier(observations, my_own_context_vector)
+```
+
+## The demonstration task
+
+`rcc.toy.ToyTask` is a small latent-variable task included so the package can be
+run and tested on its own. Its likelihood does not factorize — the potential
+over two variables' realizations is an outer product, not a sum — so a
+factorized observer gives up something real, and the realization space is small
+enough that the exact posterior comes free.
+
+```python
+from rcc.toy import ToyTask
+
+task = ToyTask(cfg)
+episode = task.sample(128, n_steps=20)
+episode.posterior        # what an observer that knows the interactions concludes
+```
+
+It is *not* the environment from the paper. That is
+[coggrid](https://github.com/johnschwarcz/coggrid), which models the generative
+process properly, holds out a slice of the variable pool for testing
+generalization, and ships the ideal-observer baselines.
+
+<img src="docs/images/belief_accumulation.png" width="100%">
+
+*One episode. The chain's belief and the exact posterior both concentrate as
+observations arrive; the dashed line is the true realization.*
+
+## Control
+
+Stage 4 never sees an observation. It reads the interactions and, from those
+alone, picks a joint realization to put the world into — one realization for
+every active variable, so the policy is a distribution over a grid.
+
+```python
+from rcc import intrinsic_value
+
+policy, predicted_value = chain.controller(interaction.strength)
+actions, log_prob, entropy = chain.controller.act(policy)
+value = intrinsic_value(rates_of_those_actions, preferences)
+```
+
+`intrinsic_value` scores a set of observation rates against what the chain wants
+to see: the geometric mean over channels of the rate where the channel is
+preferred and its complement where it is not. A geometric mean, rather than a
+sum, means one badly-missed channel cannot be bought back by the others.
+
+<img src="docs/images/policy.png" width="85%">
+
+*After a short run on the demonstration task, the policy concentrates on the
+joint realization worth the most. The star marks each panel's maximum.*
+
+## Examples
+
+```bash
+python examples/quickstart.py         # distil an exact posterior
+python examples/self_supervised.py    # learn the representation from prediction error
+python examples/coggrid_transfer.py   # train on familiar variables, test on novel ones
+```
+
+Each takes `--out DIR` to save figures instead of showing them, `--steps N`, and
+`--seed N` to pin the run. Without a seed each run explores fresh randomness.
+The third needs coggrid, and exits with a message if it is absent:
+
+```bash
+pip install git+https://github.com/johnschwarcz/coggrid
+```
+
+<img src="docs/images/training.png" width="70%">
+
+*`quickstart.py`: the chain's accuracy against the exact observer it is
+distilling, and chance.*
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest -q
+ruff check src tests examples docs
+python docs/make_assets.py    # regenerate the README figures
+```
+
+The test suite covers three things. `tests/test_reference.py` transcribes the
+original implementation's arithmetic and checks every stage against it with
+shared weights — a rewrite of a published architecture is worth nothing if it
+quietly changed the result. `tests/test_chain.py` checks the gradient seam.
+`tests/test_learning.py` trains real chains and asserts they improve.
+
+## Relation to the original code
+
+The architecture first appeared in
+[CognitiveGridworld](https://github.com/johnschwarcz/CognitiveGridworld) as five
+`nn.Module` mixins that passed state through instance attributes. This package
+computes the same functions with explicit arguments. Two behaviours were changed
+deliberately, and both are marked in `tests/test_reference.py`: the generator no
+longer collapses length-one axes, and the prediction loss no longer divides by
+zero on a batch where nothing was answered correctly.
+
+## Citation
+
+```bibtex
+@article{schwarcz2026factorization,
+  title  = {Factorization Regret mediates compositional generalization in latent space},
+  author = {Schwarcz, John},
+  year   = {2026},
+  eprint = {2603.27134},
+  archivePrefix = {arXiv}
+}
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

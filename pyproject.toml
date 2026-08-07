@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rcc"
+version = "0.1.0"
+description = "Representation Classification Chains: PyTorch modules that separate variable inference from parameter estimation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "John Schwarcz" }]
+keywords = ["pytorch", "representation-learning", "bayesian-inference", "compositional-generalization"]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Operating System :: OS Independent",
+]
+
+# 2.2 is the floor for torch.unravel_index, which the controller uses to turn a
+# flat action back into one realization per active variable.
+dependencies = ["torch>=2.2"]
+
+[project.optional-dependencies]
+# Plotting. Kept out of the core so that headless / CI installs stay small.
+viz = ["matplotlib>=3.7", "numpy>=1.24"]
+# coggrid is deliberately *not* an extra. Nothing in src/rcc imports it; one
+# example and one test do, and both skip cleanly when it is absent. Install it
+# yourself to run them:
+#   pip install git+https://github.com/johnschwarcz/coggrid
+dev = [
+  "rcc[viz]",
+  "pytest>=7.4",
+  "ruff>=0.5",
+  "mypy>=1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/johnschwarcz/rcc"
+Paper = "https://arxiv.org/abs/2603.27134"
+Environment = "https://github.com/johnschwarcz/coggrid"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rcc"]
+
+[tool.pytest.ini_options]
+# src is on the list so the docstring examples are executed, not just written.
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

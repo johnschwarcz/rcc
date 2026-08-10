@@ -1,10 +1,9 @@
 """Every tunable of a Representation Classification Chain, in one dataclass.
-
 Names follow `coggrid <https://github.com/johnschwarcz/coggrid>`
 Two of coggrid's fields are deliberately absent: ``n_steps`` and ``n_episodes``.
 For flexibility, modules read those from the shape of the tensor it is handed
+--> See __init__ for more detail <--
 """
-
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -12,8 +11,7 @@ __all__ = ["RCCConfig"]
 
 @dataclass(frozen=True, slots=True)
 class RCCConfig:
-    """Every tunable of a chain, validated on construction. See :mod:`rcc` for
-    what the four stages these configure actually do.
+    """Every tunable of a chain. See __init__ for what the 4 stages do.
 
     Attributes
     ----------
@@ -83,7 +81,6 @@ class RCCConfig:
     # ---------------------------------------------------------------- helpers
     def replace(self, **changes: Any) -> "RCCConfig":
         """Return a copy with changes applied; validation re-runs.
-
         >>> RCCConfig().replace(n_contexts=1).n_interactions
         1
         """

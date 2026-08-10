@@ -1,7 +1,6 @@
 """Stage 2 — observations and interactions to a belief.
 The readout emits increments; belief is their running sum after a softmax.
 """
-
 import torch
 from torch import Tensor, nn
 from ._helpers import require_shape, sample_categorical, seeded
@@ -50,7 +49,6 @@ class BeliefClassifier(nn.Module):
         require_shape("interactions", interactions,
             (observations.shape[0], cfg.n_observations, cfg.n_interactions),)
 
-
 def select_goal(belief: Tensor, goal_ind: Tensor) -> Tensor:
     """Pick out the belief over the one variable that is being asked about.
     belief: (n_episodes, n_steps, n_contexts, n_realizations)
@@ -60,16 +58,12 @@ def select_goal(belief: Tensor, goal_ind: Tensor) -> Tensor:
     episodes = torch.arange(belief.shape[0], device=belief.device)
     return belief[episodes, :, goal_ind]
 
-
-def sample_goal(
-    goal_belief: Tensor, generator: torch.Generator | None = None
-) -> Tensor:
+def sample_goal(goal_belief: Tensor, generator: torch.Generator | None = None) -> Tensor:
     """Draw a realization for the goal variable from the belief about it.
     goal_belief: (n_episodes, n_steps, n_realizations)
     returns: (n_episodes, n_steps)
     """
     return sample_categorical(goal_belief, generator)
-
 
 def goal_accuracy(selection: Tensor, goal_value: Tensor) -> Tensor:
     """Whether each sampled realization matched the truth, as a float mask.

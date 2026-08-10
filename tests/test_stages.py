@@ -229,7 +229,7 @@ def test_generator_rejects_a_mismatched_confidence(interactions):
 
 def test_query_needs_a_single_time_slice():
     belief = torch.rand(N_EPISODES, N_STEPS, CFG.n_contexts, CFG.n_realizations)
-    with pytest.raises(ValueError, match="index a single time step"):
+    with pytest.raises(ValueError, match=r"\(n_episodes, n_contexts, n_realizations\)"):
         query_from_belief(belief, torch.zeros(N_EPISODES, dtype=torch.long))
 
 

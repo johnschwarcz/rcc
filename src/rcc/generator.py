@@ -1,5 +1,4 @@
 """Stage 3 — a realization back to observation rates."""
-
 import torch
 from torch import Tensor, nn
 from ._helpers import require_shape, sample_categorical, seeded
@@ -49,7 +48,7 @@ class ObservationGenerator(nn.Module):
         require_shape("interactions",interactions,
             (n_episodes, cfg.n_observations, cfg.n_interactions),)
 
-def query_from_belief(belief: Tensor,  goal_ind: Tensor, *,
+def query_from_belief(belief: Tensor, goal_ind: Tensor, *,
     goal_selection: Tensor | None = None, goal_correct: Tensor | None = None,
     generator: torch.Generator | None = None,) -> tuple[Tensor, Tensor]:
     """Turn a belief into the realization/confidence pair the generator wants.
@@ -59,7 +58,7 @@ def query_from_belief(belief: Tensor,  goal_ind: Tensor, *,
     """
     if belief.ndim != 3:
         raise ValueError("belief must have shape (n_episodes, n_contexts, "
-            f"n_realizations) — index a single time step first. Got {tuple(belief.shape)}")
+            f"n_realizations). Got {tuple(belief.shape)}")
     if (goal_selection is None) != (goal_correct is None):
         raise ValueError("goal_selection and goal_correct go together: supply both or neither.")
 

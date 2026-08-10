@@ -1,5 +1,4 @@
 """The four stages, assembled. Each is a plain ``nn.Module``, importable alone."""
-
 from collections.abc import Iterator
 import torch
 from torch import Tensor, nn

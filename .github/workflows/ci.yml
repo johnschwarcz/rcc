@@ -42,7 +42,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests examples docs conftest.py conftest.py
+        run: ruff check src tests examples docs conftest.py
 
       - name: Test
         # Headless: no display on any runner.

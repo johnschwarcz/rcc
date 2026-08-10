@@ -34,9 +34,10 @@ def ordered_pairs(n_contexts: int) -> list[tuple[int, int]]:
         for pair in ((i, j), (j, i))]
     return pairs or [(0, 0)]
 
-
 class InteractionEncoder(nn.Module):
     """Active variables' embeddings --> pairwise scores.
+    learned keys, queries: (n_vars, n_observations, hidden_dim), projected down
+    to embedding_dim before they are contracted.
     cfg.learn_embeddings = False --> supply keys, queries:
     (n_vars, n_observations, embedding_dim)
     """
@@ -73,7 +74,7 @@ class InteractionEncoder(nn.Module):
         self.register_buffer("query_index", torch.tensor([q for _, q in pairs]))
 
     def forward(self, ctx_inds: Tensor) -> Interaction:
-        """Encode one batch of active variables.
+        """Encode a batch of active variables.
         ctx_inds: (n_episodes, n_contexts) of variable indices; (repeats allowed).
         returns: Interaction {score, keys, queries}
         """

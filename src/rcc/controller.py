@@ -3,14 +3,12 @@ An action is a full joint assignment, one realization per active variable, so th
 policy is a distribution over n_realizations ** n_contexts outcomes, shaped as a
 grid rather than a flat vector.
 """
-
 import torch
 from torch import Tensor, nn
 from ._helpers import sample_categorical, seeded
 from .config import RCCConfig
 
 __all__ = ["Controller", "intrinsic_value"]
-
 
 class Controller(nn.Module):
     """An actor and a critic utilizing learned interactions.

@@ -1,11 +1,7 @@
 """The config is the only place a chain's shape is decided, so it validates."""
 
-from __future__ import annotations
-
 import dataclasses
-
 import pytest
-
 from rcc import RCCConfig
 
 
@@ -29,11 +25,6 @@ def test_rejects_bool_as_a_size():
     """``True`` is an int in Python, and a hidden_dim of 1 is not what was meant."""
     with pytest.raises(ValueError, match="hidden_dim"):
         RCCConfig(hidden_dim=True)
-
-
-def test_reservoir_needs_a_recurrence_to_freeze():
-    with pytest.raises(ValueError, match="reservoir"):
-        RCCConfig(recurrent=False, reservoir=True)
 
 
 @pytest.mark.parametrize(

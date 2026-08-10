@@ -4,11 +4,8 @@ These are the tests that matter for using a stage outside a chain, which is the
 supported way to use one.
 """
 
-from __future__ import annotations
-
 import pytest
 import torch
-
 from rcc import (
     BeliefClassifier,
     Controller,
@@ -73,7 +70,7 @@ def test_encoder_rejects_supplied_embeddings_when_it_should_learn():
 
 
 def test_encoder_demands_embeddings_when_it_cannot_learn():
-    with pytest.raises(ValueError, match="both keys and queries"):
+    with pytest.raises(ValueError, match="keys/queries must be supplied"):
         InteractionEncoder(CFG.replace(learn_embeddings=False))
 
 
@@ -108,7 +105,7 @@ def test_fixed_embeddings_are_copied_not_aliased():
 
 def test_encoder_rejects_wrong_var_id_shape():
     encoder = InteractionEncoder(CFG)
-    with pytest.raises(ValueError, match="var_ids must have shape"):
+    with pytest.raises(ValueError, match="ctx_inds must have shape"):
         encoder(torch.zeros(N_EPISODES, CFG.n_contexts + 1, dtype=torch.long))
 
 
@@ -119,54 +116,41 @@ def test_learned_embeddings_start_on_the_unit_sphere():
     )
 
 
+def test_the_pair_is_ordered_so_swapping_the_variables_swaps_the_interactions():
+    """``<K_i, Q_j>``, not ``<K_j, Q_i>``: the orientation the whole chain rests on.
+
+    Episode 0 is (a, b) and episode 1 is (b, a), so the forward interaction of one
+    has to equal the reverse interaction of the other. ``ordered_pairs`` alone
+    cannot catch a key/query swap here — only routing embeddings through it can.
+    """
+    encoder = InteractionEncoder(CFG)
+    z = encoder(torch.tensor([[3, 7], [7, 3]])).score
+    assert torch.allclose(z[0, :, 0], z[1, :, 1], atol=1e-6)
+    assert torch.allclose(z[0, :, 1], z[1, :, 0], atol=1e-6)
+
+
 def test_a_repeated_variable_is_allowed():
     """The same variable may be active twice, as it is in coggrid by default."""
     encoder = InteractionEncoder(CFG)
-    strength = encoder(torch.tensor([[3, 3]])).strength
-    assert strength.shape == (1, CFG.n_observations, CFG.n_interactions)
-    assert torch.isfinite(strength).all()
+    score = encoder(torch.tensor([[3, 3]])).score
+    assert score.shape == (1, CFG.n_observations, CFG.n_interactions)
+    assert torch.isfinite(score).all()
 
 
 # --------------------------------------------------------------------------- #
 # stage 2
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("recurrent", [True, False])
-def test_belief_is_normalized_per_variable(observations, interactions, recurrent):
-    classifier = BeliefClassifier(CFG.replace(recurrent=recurrent))
+def test_belief_is_normalized_per_variable(observations, interactions):
+    classifier = BeliefClassifier(CFG)
     belief = classifier(observations, interactions)
     assert belief.shape == (N_EPISODES, N_STEPS, CFG.n_contexts, CFG.n_realizations)
     assert torch.allclose(belief.sum(-1), torch.ones_like(belief.sum(-1)), atol=1e-5)
 
 
-def test_feedforward_belief_does_not_move_over_time(observations, interactions):
-    """The ablation's whole point: no sequential integration."""
-    classifier = BeliefClassifier(CFG.replace(recurrent=False))
-    belief = classifier(observations, interactions)
-    assert torch.allclose(belief, belief[:, :1].expand_as(belief), atol=1e-6)
-
-
-def test_recurrent_belief_does_move_over_time(observations, interactions):
+def test_belief_moves_over_time(observations, interactions):
     classifier = BeliefClassifier(CFG)
     belief = classifier(observations, interactions)
     assert not torch.allclose(belief[:, 0], belief[:, -1], atol=1e-4)
-
-
-def test_reservoir_freezes_only_the_recurrence():
-    reservoir = BeliefClassifier(CFG.replace(reservoir=True))
-    assert not any(p.requires_grad for p in reservoir.rnn.parameters())
-    assert reservoir.initial_short_term.requires_grad
-    assert all(p.requires_grad for p in reservoir.readin.parameters())
-    assert all(p.requires_grad for p in reservoir.readout.parameters())
-
-
-def test_reservoir_recurrence_survives_a_backward_pass(observations, interactions):
-    classifier = BeliefClassifier(CFG.replace(reservoir=True))
-    before = [p.clone() for p in classifier.rnn.parameters()]
-    belief = classifier(observations, interactions)
-    belief.sum().backward()
-    assert all(p.grad is None for p in classifier.rnn.parameters())
-    frozen = zip(classifier.rnn.parameters(), before, strict=True)
-    assert all(torch.equal(p, b) for p, b in frozen)
 
 
 def test_classifier_rejects_wrong_observation_width(interactions):
@@ -191,16 +175,16 @@ def test_classifier_accepts_any_episode_length(interactions):
 
 def test_select_goal_picks_the_named_variable():
     belief = torch.rand(N_EPISODES, N_STEPS, CFG.n_contexts, CFG.n_realizations)
-    goal_index = torch.randint(0, CFG.n_contexts, (N_EPISODES,))
-    goal_belief = select_goal(belief, goal_index)
+    goal_ind = torch.randint(0, CFG.n_contexts, (N_EPISODES,))
+    goal_belief = select_goal(belief, goal_ind)
     assert goal_belief.shape == (N_EPISODES, N_STEPS, CFG.n_realizations)
     for episode in range(N_EPISODES):
-        assert torch.equal(goal_belief[episode], belief[episode, :, goal_index[episode]])
+        assert torch.equal(goal_belief[episode], belief[episode, :, goal_ind[episode]])
 
 
 def test_select_goal_rejects_a_mismatched_index():
     belief = torch.rand(N_EPISODES, N_STEPS, CFG.n_contexts, CFG.n_realizations)
-    with pytest.raises(ValueError, match="goal_index must have shape"):
+    with pytest.raises(ValueError, match="goal_ind must have shape"):
         select_goal(belief, torch.zeros(N_EPISODES + 1, dtype=torch.long))
 
 
@@ -261,27 +245,27 @@ def test_teaching_signal_is_all_or_nothing():
 
 def test_query_confidence_is_the_probability_of_what_was_sampled():
     belief = torch.softmax(torch.randn(N_EPISODES, CFG.n_contexts, 4), -1)
-    realizations, confidence = query_from_belief(
+    ctx_vals, confidence = query_from_belief(
         belief, torch.zeros(N_EPISODES, dtype=torch.long)
     )
-    expected = belief.gather(-1, realizations.unsqueeze(-1)).squeeze(-1)
+    expected = belief.gather(-1, ctx_vals.unsqueeze(-1)).squeeze(-1)
     assert torch.allclose(confidence, expected)
 
 
 def test_teaching_touches_only_the_goal_variable():
     belief = torch.softmax(torch.randn(N_EPISODES, CFG.n_contexts, 4), -1)
-    goal_index = torch.randint(0, CFG.n_contexts, (N_EPISODES,))
+    goal_ind = torch.randint(0, CFG.n_contexts, (N_EPISODES,))
     generator = torch.Generator().manual_seed(3)
-    untaught, _ = query_from_belief(belief, goal_index, generator=generator)
+    untaught, _ = query_from_belief(belief, goal_ind, generator=generator)
     taught, _ = query_from_belief(
         belief,
-        goal_index,
+        goal_ind,
         goal_selection=torch.full((N_EPISODES,), 3),
         goal_correct=torch.ones(N_EPISODES),
         generator=torch.Generator().manual_seed(3),
     )
     for episode in range(N_EPISODES):
-        goal = int(goal_index[episode])
+        goal = int(goal_ind[episode])
         others = [c for c in range(CFG.n_contexts) if c != goal]
         assert taught[episode, goal] == 3
         assert all(taught[episode, c] == untaught[episode, c] for c in others)

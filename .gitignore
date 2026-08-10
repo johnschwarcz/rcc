@@ -14,3 +14,7 @@ dist/
 # Environments
 .venv/
 venv/
+
+# Editor. The interpreter path in here is Windows-specific, so it is local
+# configuration rather than something to hand to a contributor.
+.vscode/

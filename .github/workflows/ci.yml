@@ -42,7 +42,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests examples docs
+        run: ruff check src tests examples docs conftest.py conftest.py
 
       - name: Test
         # Headless: no display on any runner.
@@ -67,12 +67,13 @@ jobs:
         # tests/test_learning.py is what checks that they learn.
         env:
           MPLBACKEND: Agg
+        # _common.py is shared plumbing, not a runnable example.
         run: |
-          for f in examples/*.py; do
+          for f in examples/[!_]*.py; do
             echo "--- $f"
-            python "$f" --out "$RUNNER_TEMP/figures" --steps 20
+            python "$f" --out "$RUNNER_TEMP/figures" --iterations 20
           done
       - name: Regenerate the README figures
         env:
           MPLBACKEND: Agg
-        run: python docs/make_assets.py --out "$RUNNER_TEMP/images" --steps 20
+        run: python docs/make_assets.py --out "$RUNNER_TEMP/images" --iterations 20

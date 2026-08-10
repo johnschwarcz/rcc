@@ -8,15 +8,11 @@ follow them — so a block that uses ``chain`` gets the ``chain`` an earlier blo
 defined.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import re
 from pathlib import Path
-
 import pytest
 import torch
-
 from rcc import RCCConfig
 
 README = Path(__file__).resolve().parent.parent / "README.md"

@@ -1,50 +1,40 @@
 """The chain has to actually learn, not merely produce correctly-shaped tensors.
 
-Every test here trains a real chain on :class:`~rcc.toy.ToyTask` and asserts that
-something improved. The budgets are tiny — a few hundred steps against the
-paper's hundred thousand plus — so the thresholds test *progress*, not mastery.
-They are set well inside what was measured across several seeds, so a failure
-here means something broke rather than that a run was unlucky.
+Every test here trains a real chain against a real environment — coggrid, a
+development dependency; nothing in ``src/rcc`` imports it — and asserts that
+something improved. The budgets are tiny, a few hundred steps against the paper's
+hundred thousand plus, so the thresholds test *progress*, not mastery. They sit
+well inside what was measured across several seeds, so a failure here means
+something broke rather than that a run was unlucky.
 """
 
-from __future__ import annotations
-
-import pytest
 import torch
-
+from _common import accuracy, draw, embeddings, world_and_config
 from rcc import (
     RCC,
-    RCCConfig,
     controller_loss,
-    distillation_loss,
     embedding_norm_penalty,
     intrinsic_value,
     prediction_loss,
     select_goal,
+    supervised_loss,
 )
-from rcc.toy import ToyTask
-
-SHAPE = dict(
-    n_vars=8,
-    n_contexts=2,
-    n_realizations=4,
-    n_observations=5,
-    embedding_dim=6,
-    hidden_dim=64,
-)
-CHANCE = 1 / SHAPE["n_realizations"]
 
 
-def taught_chain(seed=0):
-    """A chain handed the task's true embeddings, so only stage 2 has to learn."""
-    cfg = RCCConfig(**SHAPE, learn_embeddings=False, seed=seed)
-    task = ToyTask(cfg, seed=seed)
-    return cfg, task, RCC(cfg, keys=task.keys, queries=task.queries)
+def taught_chain(seed=0, **overrides):
+    """A chain handed the world's true embeddings, so only stage 2 has to learn."""
+    world, cfg = world_and_config(seed=seed, learn_embeddings=False, **overrides)
+    return world, cfg, RCC(cfg, **embeddings(world))
 
 
-def goal_accuracy_of(belief, episode):
-    goal_belief = select_goal(belief.detach(), episode.goal_index)
-    return (goal_belief[:, -1].argmax(-1) == episode.goal_value).float().mean().item()
+def learning_chain(seed=0):
+    """A chain that has to find the representation for itself."""
+    world, cfg = world_and_config(seed=seed, learn_embeddings=True)
+    return world, cfg, RCC(cfg)
+
+
+def goal_accuracy_of(belief, batch):
+    return accuracy(select_goal(belief.detach(), batch.goal_ind), batch.goal_value)
 
 
 # --------------------------------------------------------------------------- #
@@ -53,70 +43,64 @@ def goal_accuracy_of(belief, episode):
 def test_distillation_fits_a_batch_and_approaches_the_ideal_observer():
     """The strongest statement a fast test can make: the architecture can
     represent the exact posterior, not just move towards it."""
-    cfg, task, chain = taught_chain()
-    episode = task.sample(128, n_steps=20, generator=torch.Generator().manual_seed(0))
+    world, cfg, chain = taught_chain()
+    batch = draw(world, 128, rng=0)
     optimizer = torch.optim.Adam(chain.inference_parameters(), lr=3e-3)
 
     first = None
     for step in range(300):
-        belief, _ = chain(episode.observations, episode.var_ids)
-        loss = distillation_loss(belief, episode.posterior)
+        belief, _ = chain(batch.observations, batch.ctx_inds)
+        loss = supervised_loss(belief, batch.posterior)
         if step == 0:
             first = loss.item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    ideal = select_goal(episode.posterior, episode.goal_index)
-    ideal_accuracy = (
-        (ideal[:, -1].argmax(-1) == episode.goal_value).float().mean().item()
-    )
-    accuracy = goal_accuracy_of(belief, episode)
-
+    chance = 1 / cfg.n_realizations
     assert loss.item() < first / 2
-    assert accuracy > CHANCE + 0.25
-    assert accuracy > ideal_accuracy - 0.25
+    assert goal_accuracy_of(belief, batch) > chance + 0.25
+    assert goal_accuracy_of(belief, batch) > batch.ideal - 0.25
 
 
 def test_a_streaming_chain_improves_on_unseen_episodes():
     """Fresh episodes every step, so nothing can be memorized."""
-    cfg, task, chain = taught_chain()
+    world, cfg, chain = taught_chain()
     optimizer = torch.optim.Adam(chain.inference_parameters(), lr=3e-3)
-    rng = torch.Generator().manual_seed(0)
 
-    accuracy = []
+    scores = []
     for _ in range(400):
-        episode = task.sample(128, n_steps=20, generator=rng)
-        belief, _ = chain(episode.observations, episode.var_ids)
-        loss = distillation_loss(belief, episode.posterior)
+        batch = draw(world, 128)
+        belief, _ = chain(batch.observations, batch.ctx_inds)
+        loss = supervised_loss(belief, batch.posterior)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        accuracy.append(goal_accuracy_of(belief, episode))
+        scores.append(goal_accuracy_of(belief, batch))
 
-    early = sum(accuracy[:50]) / 50
-    late = sum(accuracy[-50:]) / 50
+    early = sum(scores[:50]) / 50
+    late = sum(scores[-50:]) / 50
     assert late > early
-    assert late > CHANCE
+    assert late > 1 / cfg.n_realizations
 
 
 def test_a_trained_belief_sharpens_as_evidence_arrives():
     """What the accumulator is for: later steps should be more certain."""
-    cfg, task, chain = taught_chain()
-    episode = task.sample(128, n_steps=20, generator=torch.Generator().manual_seed(0))
+    world, cfg, chain = taught_chain()
+    batch = draw(world, 128, rng=0)
     optimizer = torch.optim.Adam(chain.inference_parameters(), lr=3e-3)
     for _ in range(300):
-        belief, _ = chain(episode.observations, episode.var_ids)
-        loss = distillation_loss(belief, episode.posterior)
+        belief, _ = chain(batch.observations, batch.ctx_inds)
+        loss = supervised_loss(belief, batch.posterior)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    goal_belief = select_goal(belief.detach(), episode.goal_index)
+    goal_belief = select_goal(belief.detach(), batch.goal_ind)
     entropy = -(goal_belief * goal_belief.clamp_min(1e-12).log()).sum(-1).mean(0)
     assert entropy[-1] < entropy[0]
 
-    correct = (goal_belief.argmax(-1) == episode.goal_value[:, None]).float().mean(0)
+    correct = (goal_belief.argmax(-1) == batch.goal_value[:, None]).float().mean(0)
     assert correct[-1] > correct[0]
 
 
@@ -124,20 +108,17 @@ def test_a_trained_belief_sharpens_as_evidence_arrives():
 # stages 1 and 3 learn, without labels
 # --------------------------------------------------------------------------- #
 def test_prediction_error_trains_the_embeddings():
-    cfg = RCCConfig(**SHAPE, learn_embeddings=True, seed=0)
-    task = ToyTask(cfg, seed=0)
-    chain = RCC(cfg)
+    world, cfg, chain = learning_chain()
     optimizer = torch.optim.Adam(chain.estimation_parameters(), lr=3e-3)
-    rng = torch.Generator().manual_seed(0)
     before = chain.encoder.keys.detach().clone()
 
     losses = []
     for _ in range(150):
-        episode = task.sample(128, n_steps=20, generator=rng)
-        belief, interaction = chain(episode.observations, episode.var_ids)
-        rates = chain.reconstruct(belief, interaction, episode.goal_index)
+        batch = draw(world, 128)
+        belief, interaction = chain(batch.observations, batch.ctx_inds)
+        rates = chain.reconstruct(belief, interaction, batch.goal_ind)
         loss = prediction_loss(
-            rates, episode.observations.mean(1)
+            rates, batch.observations.mean(1)
         ) + embedding_norm_penalty(interaction.keys, interaction.queries)
         optimizer.zero_grad()
         loss.backward()
@@ -150,31 +131,24 @@ def test_prediction_error_trains_the_embeddings():
 
 def test_the_teaching_signal_does_not_break_prediction():
     """The goal slot is overwritten with a verdict; training must still descend."""
-    cfg = RCCConfig(**SHAPE, learn_embeddings=True, seed=0)
-    task = ToyTask(cfg, seed=0)
-    chain = RCC(cfg)
+    world, cfg, chain = learning_chain()
     optimizer = torch.optim.Adam(chain.estimation_parameters(), lr=3e-3)
-    rng = torch.Generator().manual_seed(0)
 
     losses = []
     for _ in range(150):
-        episode = task.sample(128, n_steps=20, generator=rng)
-        belief, interaction = chain(episode.observations, episode.var_ids)
-        goal_belief = select_goal(belief, episode.goal_index)
-        selection = goal_belief[:, -1].argmax(-1)
-        correct = (selection == episode.goal_value).float()
+        batch = draw(world, 128)
+        belief, interaction = chain(batch.observations, batch.ctx_inds)
+        selection = select_goal(belief, batch.goal_ind)[:, -1].argmax(-1)
+        correct = (selection == batch.goal_value).float()
         rates = chain.reconstruct(
-            belief,
-            interaction,
-            episode.goal_index,
-            goal_selection=selection,
-            goal_correct=correct,
+            belief, interaction, batch.goal_ind,
+            goal_selection=selection, goal_correct=correct,
         )
         loss = prediction_loss(
             rates,
-            episode.observations.mean(1),
+            batch.observations.mean(1),
             correct=correct,
-            chance=CHANCE,
+            chance=1 / cfg.n_realizations,
         )
         optimizer.zero_grad()
         loss.backward()
@@ -189,19 +163,19 @@ def test_the_teaching_signal_does_not_break_prediction():
 # stage 4 learns
 # --------------------------------------------------------------------------- #
 def test_the_controller_learns_to_prefer_valuable_actions():
-    cfg, task, chain = taught_chain()
+    world, cfg, chain = taught_chain()
     optimizer = torch.optim.Adam(chain.control_parameters(), lr=3e-3)
     rng = torch.Generator().manual_seed(0)
     preferences = (torch.rand(cfg.n_observations, generator=rng) > 0.5).float()
 
     rewards = []
     for _ in range(200):
-        episode = task.sample(128, n_steps=1, generator=rng)
-        interaction = chain.encoder(episode.var_ids)
-        policy, value = chain.controller(interaction.strength)
+        batch = draw(world, 128)
+        policy, value = chain.controller(chain.encoder(batch.ctx_inds).score)
         actions, log_prob, entropy = chain.controller.act(policy, rng)
 
-        table = task.rate_table(episode.var_ids).reshape(128, cfg.n_observations, -1)
+        # coggrid's likelihood table, indexed at the joint action just taken.
+        table = batch.rates.reshape(128, cfg.n_observations, -1)
         flat = actions[:, 0] * cfg.n_realizations + actions[:, 1]
         rates = table.gather(
             -1, flat[:, None, None].expand(-1, cfg.n_observations, 1)
@@ -217,18 +191,14 @@ def test_the_controller_learns_to_prefer_valuable_actions():
     assert sum(rewards[-20:]) / 20 > sum(rewards[:20]) / 20 + 0.03
 
 
-@pytest.mark.parametrize("recurrent", [True, False])
-def test_both_architectures_train_without_blowing_up(recurrent):
-    cfg = RCCConfig(**SHAPE, learn_embeddings=False, recurrent=recurrent, seed=0)
-    task = ToyTask(cfg, seed=0)
-    chain = RCC(cfg, keys=task.keys, queries=task.queries)
+def test_training_does_not_blow_up():
+    world, cfg, chain = taught_chain()
     optimizer = torch.optim.Adam(chain.inference_parameters(), lr=3e-3)
-    rng = torch.Generator().manual_seed(0)
 
     for _ in range(50):
-        episode = task.sample(64, n_steps=10, generator=rng)
-        belief, _ = chain(episode.observations, episode.var_ids)
-        loss = distillation_loss(belief, episode.posterior)
+        batch = draw(world, 64)
+        belief, _ = chain(batch.observations, batch.ctx_inds)
+        loss = supervised_loss(belief, batch.posterior)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

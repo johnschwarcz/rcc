@@ -13,11 +13,8 @@ function of the same inputs. Where behaviour *was* deliberately changed, there i
 a test here saying so.
 """
 
-from __future__ import annotations
-
 import pytest
 import torch
-
 from rcc import (
     BeliefClassifier,
     Controller,
@@ -28,11 +25,11 @@ from rcc import (
 )
 from rcc.losses import (
     controller_loss,
-    distillation_loss,
     embedding_norm_penalty,
     prediction_loss,
     reward_loss,
     soft_clip,
+    supervised_loss,
 )
 
 CFG = RCCConfig(
@@ -54,7 +51,7 @@ def batch():
     n_episodes, n_steps = 5, 7
     return {
         "observations": torch.rand(n_episodes, n_steps, CFG.n_observations).round(),
-        "var_ids": torch.randint(0, CFG.n_vars, (n_episodes, CFG.n_contexts)),
+        "ctx_inds": torch.randint(0, CFG.n_vars, (n_episodes, CFG.n_contexts)),
         "keys": torch.randn(CFG.n_vars, CFG.n_observations, CFG.embedding_dim),
         "queries": torch.randn(CFG.n_vars, CFG.n_observations, CFG.embedding_dim),
     }
@@ -90,13 +87,13 @@ def original_interactions(all_K, all_Q, ctx_inds, n_contexts, z_dims):
 def test_interactions_match(batch, n_contexts):
     cfg = CFG.replace(n_contexts=n_contexts)
     keys, queries = batch["keys"], batch["queries"]
-    var_ids = torch.randint(0, cfg.n_vars, (5, n_contexts))
+    ctx_inds = torch.randint(0, cfg.n_vars, (5, n_contexts))
 
     encoder = InteractionEncoder(cfg, keys=keys, queries=queries)
-    mine = encoder(var_ids).strength
+    mine = encoder(ctx_inds).score
 
     theirs = original_interactions(
-        keys, queries, var_ids, n_contexts, (5, cfg.n_observations, cfg.n_interactions)
+        keys, queries, ctx_inds, n_contexts, (5, cfg.n_observations, cfg.n_interactions)
     )
     assert torch.allclose(mine, theirs, atol=1e-6)
 
@@ -119,28 +116,14 @@ def original_rnn_classification(m, obs_flat, active_Z, cfg):
     return torch.softmax(update.cumsum(1), -1)
 
 
-def original_ff_classification(m, obs_flat, active_Z, cfg):
-    """Transcribed from ``FF_classification``."""
-    n_episodes, n_steps, _ = obs_flat.shape
-    Z = active_Z.detach().reshape(n_episodes, 1, -1)
-    O = obs_flat.mean(1, keepdims=True)  # noqa: E741 — the original's name
-    inp = torch.relu(m.readin(torch.cat((O, Z), dim=-1)))
-    update = m.readout(inp)
-    belief = update.expand(-1, n_steps, -1)
-    belief = belief.reshape(n_episodes, n_steps, cfg.n_contexts, cfg.n_realizations)
-    return torch.softmax(belief, -1)
-
-
-@pytest.mark.parametrize("recurrent", [True, False])
-def test_classifier_matches(batch, recurrent):
-    cfg = CFG.replace(recurrent=recurrent)
-    classifier = BeliefClassifier(cfg)
-    encoder = InteractionEncoder(cfg, keys=batch["keys"], queries=batch["queries"])
-    interactions = encoder(batch["var_ids"]).strength
+def test_classifier_matches(batch):
+    classifier = BeliefClassifier(CFG)
+    encoder = InteractionEncoder(CFG, keys=batch["keys"], queries=batch["queries"])
+    interactions = encoder(batch["ctx_inds"]).score
 
     mine = classifier(batch["observations"], interactions)
-    reference = original_rnn_classification if recurrent else original_ff_classification
-    theirs = reference(classifier, batch["observations"], interactions, cfg)
+    theirs = original_rnn_classification(
+        classifier, batch["observations"], interactions, CFG)
     assert torch.allclose(mine, theirs, atol=1e-6)
 
 
@@ -152,7 +135,7 @@ def test_belief_is_the_softmax_of_a_running_sum(batch):
     """
     classifier = BeliefClassifier(CFG)
     encoder = InteractionEncoder(CFG, keys=batch["keys"], queries=batch["queries"])
-    interactions = encoder(batch["var_ids"]).strength
+    interactions = encoder(batch["ctx_inds"]).score
     belief = classifier(batch["observations"], interactions)
 
     # log belief recovers the cumulative logits up to a per-step constant, so
@@ -203,12 +186,12 @@ def original_get_prediction(m, sample, conf, active_Z):
 def test_generator_matches(batch):
     generator = ObservationGenerator(CFG)
     encoder = InteractionEncoder(CFG, keys=batch["keys"], queries=batch["queries"])
-    interactions = encoder(batch["var_ids"]).strength
-    realizations = torch.randint(0, CFG.n_realizations, (5, CFG.n_contexts))
+    interactions = encoder(batch["ctx_inds"]).score
+    ctx_vals = torch.randint(0, CFG.n_realizations, (5, CFG.n_contexts))
     confidence = torch.rand(5, CFG.n_contexts)
 
-    mine = generator(realizations, confidence, interactions)
-    theirs = original_get_prediction(generator, realizations, confidence, interactions)
+    mine = generator(ctx_vals, confidence, interactions)
+    theirs = original_get_prediction(generator, ctx_vals, confidence, interactions)
     assert torch.allclose(mine, theirs, atol=1e-6)
 
 
@@ -246,7 +229,7 @@ def original_controller_forward(m, active_Z, cfg):
 def test_controller_matches(batch):
     controller = Controller(CFG)
     encoder = InteractionEncoder(CFG, keys=batch["keys"], queries=batch["queries"])
-    interactions = encoder(batch["var_ids"]).strength
+    interactions = encoder(batch["ctx_inds"]).score
 
     policy, value = controller(interactions)
     their_policy, their_value = original_controller_forward(
@@ -297,14 +280,14 @@ def test_soft_clip_matches():
     assert torch.allclose(soft_clip(x), original_soft_clip(x), atol=1e-6)
 
 
-def test_distillation_loss_matches():
+def test_supervised_loss_matches():
     """Transcribed from ``Model_backward.SANITY_loss``."""
     P = torch.softmax(torch.randn(5, 7, CFG.n_realizations), -1)
     Q = torch.softmax(torch.randn(5, 7, CFG.n_realizations), -1)
 
     DKL = original_DKL_sym(Q, P, PM=False)
     theirs = ((DKL - DKL.detach().min() + 1e-8) ** 0.5).mean()
-    assert torch.allclose(distillation_loss(Q, P), theirs, atol=1e-6)
+    assert torch.allclose(supervised_loss(Q, P), theirs, atol=1e-6)
 
 
 def test_reward_loss_matches():
@@ -359,7 +342,7 @@ def test_prediction_loss_survives_a_batch_with_nothing_correct():
 def test_embedding_norm_penalty_matches(batch):
     cfg = CFG.replace(learn_embeddings=True)
     encoder = InteractionEncoder(cfg)
-    interaction = encoder(batch["var_ids"])
+    interaction = encoder(batch["ctx_inds"])
 
     K_norm = (torch.norm(interaction.keys, dim=-1) - 1) ** 2
     Q_norm = (torch.norm(interaction.queries, dim=-1) - 1) ** 2

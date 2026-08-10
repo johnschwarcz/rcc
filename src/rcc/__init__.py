@@ -19,13 +19,13 @@ Quick start
 ...                 n_observations=3, hidden_dim=32, seed=0)
 >>> chain = RCC(cfg)
 >>> observations = torch.rand(16, 10, 3).round()
->>> var_ids = torch.randint(0, cfg.n_vars, (16, cfg.n_contexts))
->>> belief, interaction = chain(observations, var_ids)
+>>> ctx_inds = torch.randint(0, cfg.n_vars, (16, cfg.n_contexts))
+>>> belief, interaction = chain(observations, ctx_inds)
 >>> belief.shape
 torch.Size([16, 10, 2, 4])
 
 Nothing above is specific to a task. Supply your own ``observations`` and
-``var_ids`` and the chain applies unchanged.
+``ctx_inds`` and the chain applies unchanged.
 
 Layout
 ------
@@ -34,32 +34,33 @@ Layout
 ``classifier``    Stage 2. Observations to an accumulated belief.
 ``generator``     Stage 3. A belief back to observation rates.
 ``controller``    Stage 4. Interactions to an action.
-``losses``        One objective per stage, and the divergences behind them.
+``losses``        One objective per stage. The primitives they are built from
+                  (``symmetric_kl``, ``kl_divergence``, ``soft_clip``) stay in
+                  the module rather than at the top level; import them from
+                  ``rcc.losses`` if you are writing an objective of your own.
 ``chain``         :class:`RCC`, which holds all four.
-``toy``           A small demonstration task, so the package runs on its own.
 ``viz``           Plotting. Every function returns a figure; none call ``show()``.
 
 Names follow `coggrid <https://github.com/johnschwarcz/coggrid>`_, the
-environment the paper used, but nothing here imports it.
+environment the paper used, so the two can be read side by side — though nothing
+here imports it. Config fields, ``ctx_inds``, ``ctx_vals``, ``goal_ind``,
+``goal_value``, ``observations`` and ``rates`` are all coggrid's own names, kept
+rather than reinvented. *Realization* stays the word for what a ``ctx_vals``
+holds, exactly as coggrid pairs the field with ``n_realizations``.
 """
 
-from __future__ import annotations
-
-from .chain import RCC, ChainOutput
+from .chain import RCC
 from .classifier import BeliefClassifier, goal_accuracy, sample_goal, select_goal
 from .config import RCCConfig
-from .controller import Control, Controller, intrinsic_value
+from .controller import Controller, intrinsic_value
 from .generator import ObservationGenerator, query_from_belief
 from .interactions import Interaction, InteractionEncoder, ordered_pairs
 from .losses import (
     controller_loss,
-    distillation_loss,
     embedding_norm_penalty,
-    kl_divergence,
     prediction_loss,
     reward_loss,
-    soft_clip,
-    symmetric_kl,
+    supervised_loss,
 )
 
 __version__ = "0.1.0"
@@ -70,7 +71,6 @@ __all__ = [
     "RCCConfig",
     # the chain
     "RCC",
-    "ChainOutput",
     # stage 1 — representation
     "InteractionEncoder",
     "Interaction",
@@ -85,15 +85,11 @@ __all__ = [
     "query_from_belief",
     # stage 4 — control
     "Controller",
-    "Control",
     "intrinsic_value",
     # objectives
-    "distillation_loss",
+    "supervised_loss",
     "reward_loss",
     "prediction_loss",
     "embedding_norm_penalty",
     "controller_loss",
-    "symmetric_kl",
-    "kl_divergence",
-    "soft_clip",
 ]

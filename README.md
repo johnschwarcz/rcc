@@ -12,6 +12,13 @@ forward pass and no gradient.
 
 <img src="docs/images/architecture.png" width="100%">
 
+*Left: variables own key and query embeddings, contracted into the interactions
+`Ẑ`. Centre: the classifier infers realizations from observations and `Ẑ`, the
+generator predicts observations back from them — reward trains the first,
+self-supervision the second, and the dashed arrows carry no gradient. Right: with
+the interactions learned, the generator turns preferences into a landscape the
+controller can climb.*
+
 Every stage is a plain `nn.Module` that takes and returns tensors. There is no
 dependency on any particular environment, and no training loop to adopt.
 
@@ -40,9 +47,9 @@ cfg = RCCConfig(n_vars=50, n_contexts=2, n_realizations=4,
 chain = RCC(cfg)
 
 observations = torch.rand(16, 10, 3).round()      # (episodes, steps, channels)
-var_ids = torch.randint(0, 50, (16, 2))           # which variables are active
+ctx_inds = torch.randint(0, 50, (16, 2))           # which variables are active
 
-belief, interaction = chain(observations, var_ids)
+belief, interaction = chain(observations, ctx_inds)
 belief.shape        # (16, 10, 2, 4) — episodes, steps, variables, realizations
 ```
 
@@ -53,7 +60,7 @@ in episode `e`, that active variable `c` has realization `r`.
 
 | Stage | Module | Reads | Produces |
 | --- | --- | --- | --- |
-| 1. Representation | `InteractionEncoder` | `var_ids` | one interaction per ordered pair of active variables, per channel |
+| 1. Representation | `InteractionEncoder` | `ctx_inds` | one interaction per ordered pair of active variables, per channel |
 | 2. Classification | `BeliefClassifier` | observations, interactions | a belief over each active variable's realization |
 | 3. Generation | `ObservationGenerator` | a realization, interactions | predicted observation rates |
 | 4. Control | `Controller` | interactions | a distribution over joint realizations |
@@ -104,8 +111,6 @@ by side.
 | `n_observations` | `5` | Number of binary observation channels. |
 | `embedding_dim` | `30` | Dimensionality of the key/query embeddings that are contracted into interactions. |
 | `hidden_dim` | `1000` | Width of every hidden layer, and of the recurrent state. |
-| `recurrent` | `True` | Whether the classifier integrates observations one step at a time. `False` gives it only the observation mean, and a belief constant over time. |
-| `reservoir` | `False` | Whether to freeze the recurrent weights at initialization. The readin, readout and initial states still train. Requires `recurrent=True`. |
 | `learn_embeddings` | `True` | Whether stage 1's embeddings are learned. `False` requires you to supply them, which isolates the classifier by handing it a perfect representation. |
 | `seed` | `None` | Seed for parameter initialization. `None` means non-reproducible. Seeding restores the global RNG afterwards, so it will not disturb your own stream. |
 
@@ -123,7 +128,7 @@ chain is being asked to do.
 
 | Function | Trains | Needs |
 | --- | --- | --- |
-| `distillation_loss(belief, target)` | stage 2 | a belief you already trust |
+| `supervised_loss(belief, target)` | stage 2 | a belief you already trust |
 | `reward_loss(goal_belief, selection, correct)` | stage 2 | only whether the committed answer was right |
 | `prediction_loss(predicted_rates, observed_rates)` | stages 1, 3 | nothing — the observations are their own target |
 | `embedding_norm_penalty(keys, queries)` | stage 1 | nothing |
@@ -147,21 +152,21 @@ where they came from:
 | Argument | Shape | Meaning |
 | --- | --- | --- |
 | `observations` | `(n_episodes, n_steps, n_observations)` | binary observations over time |
-| `var_ids` | `(n_episodes, n_contexts)` | which variables are active, as indices into the pool |
+| `ctx_inds` | `(n_episodes, n_contexts)` | which variables are active, as indices into the pool |
 
 Anything with a pool of discrete latent variables, a stream of binary
 observations, and a question about one of those variables will fit. A training
 step, in full:
 
 ```python
-from rcc import RCC, RCCConfig, distillation_loss
+from rcc import RCC, RCCConfig, supervised_loss
 
 chain = RCC(RCCConfig(n_vars=50, n_contexts=2, n_realizations=4,
                       n_observations=3, hidden_dim=32))
 optimizer = torch.optim.Adam(chain.inference_parameters(), lr=1e-3)
 
-belief, interaction = chain(observations, var_ids)
-loss = distillation_loss(belief, target_belief)
+belief, interaction = chain(observations, ctx_inds)
+loss = supervised_loss(belief, target_belief)
 optimizer.zero_grad()
 loss.backward()
 optimizer.step()
@@ -176,26 +181,28 @@ classifier = BeliefClassifier(cfg)
 belief = classifier(observations, my_own_context_vector)
 ```
 
-## The demonstration task
+## The environment
 
-`rcc.toy.ToyTask` is a small latent-variable task included so the package can be
-run and tested on its own. Its likelihood does not factorize — the potential
-over two variables' realizations is an outer product, not a sum — so a
-factorized observer gives up something real, and the realization space is small
-enough that the exact posterior comes free.
+Nothing in `src/rcc` imports an environment, and nothing should — the four stages
+take tensors and return tensors. To *run* a chain you need a task, and the one the
+paper used is [coggrid](https://github.com/johnschwarcz/coggrid): it models the
+generative process properly, holds out a slice of the variable pool for testing
+generalization, and ships the ideal-observer baselines.
 
 ```python
-from rcc.toy import ToyTask
+from coggrid import CogGridConfig, World, run_observers
 
-task = ToyTask(cfg)
-episode = task.sample(128, n_steps=20)
-episode.posterior        # what an observer that knows the interactions concludes
+world = World(CogGridConfig(n_vars=50, n_contexts=2, n_realizations=4,
+                            n_observations=3, embedding_dim=30, n_steps=20))
+batch = world.sample_episodes(128, split="train")
+posterior = run_observers(batch)["joint"].belief   # the ideal observer's belief
 ```
 
-It is *not* the environment from the paper. That is
-[coggrid](https://github.com/johnschwarcz/coggrid), which models the generative
-process properly, holds out a slice of the variable pool for testing
-generalization, and ships the ideal-observer baselines.
+`batch.ctx_inds` and `batch.observations` go straight into a chain — the names are
+coggrid's and rcc keeps them — and the joint observer's belief is the target worth
+distilling.
+coggrid is a development dependency, installed by `pip install -e ".[dev]"` — it is
+not needed to import `rcc`.
 
 <img src="docs/images/belief_accumulation.png" width="100%">
 
@@ -211,7 +218,7 @@ every active variable, so the policy is a distribution over a grid.
 ```python
 from rcc import intrinsic_value
 
-policy, predicted_value = chain.controller(interaction.strength)
+policy, predicted_value = chain.controller(interaction.score)
 actions, log_prob, entropy = chain.controller.act(policy)
 value = intrinsic_value(rates_of_those_actions, preferences)
 ```
@@ -223,20 +230,39 @@ sum, means one badly-missed channel cannot be bought back by the others.
 
 <img src="docs/images/policy.png" width="85%">
 
-*After a short run on the demonstration task, the policy concentrates on the
-joint realization worth the most. The star marks each panel's maximum.*
+*After a short run, the policy concentrates on the joint realization worth the
+most. The star marks each panel's maximum.*
 
 ## Examples
 
 ```bash
 python examples/quickstart.py         # distil an exact posterior
 python examples/self_supervised.py    # learn the representation from prediction error
-python examples/coggrid_transfer.py   # train on familiar variables, test on novel ones
+python examples/transfer.py           # train on familiar variables, test on novel ones
 ```
 
-Each takes `--out DIR` to save figures instead of showing them, `--steps N`, and
-`--seed N` to pin the run. Without a seed each run explores fresh randomness.
-The third needs coggrid, and exits with a message if it is absent:
+Every task and architecture parameter is a flag, so reshaping a run never means
+editing a file. `--help` lists them all:
+
+```bash
+python examples/quickstart.py --n-realizations 8 --n-contexts 3   # a bigger task
+python examples/quickstart.py --hidden-dim 512                    # a wider chain
+```
+
+Task flags (`--n-vars`, `--n-contexts`, `--n-realizations`, `--n-observations`,
+`--embedding-dim`) reach both the world and the chain, because the two have to be
+describing the same task. `--n-steps` goes to the world alone — the chain reads the
+step count off the tensor it is handed. `--hidden-dim` is the chain's alone. Run controls are
+`--out DIR` to save figures instead of showing them, `--iterations N`, `--episodes N` and
+`--seed N`; without a seed each run explores fresh randomness. `docs/make_assets.py`
+takes the same flags.
+
+To change a default rather than pass it every time, pin it where the script parses
+its arguments — `args = arguments(n_realizations=8)` — and the command line still
+overrides. Each run prints the config it resolved to, so a figure is never
+ambiguous about the shape that produced it.
+
+All three train against coggrid, and say so if it is absent:
 
 ```bash
 pip install git+https://github.com/johnschwarcz/coggrid
@@ -252,7 +278,7 @@ distilling, and chance.*
 ```bash
 pip install -e ".[dev]"
 pytest -q
-ruff check src tests examples docs
+ruff check src tests examples docs conftest.py
 python docs/make_assets.py    # regenerate the README figures
 ```
 
@@ -260,7 +286,8 @@ The test suite covers three things. `tests/test_reference.py` transcribes the
 original implementation's arithmetic and checks every stage against it with
 shared weights — a rewrite of a published architecture is worth nothing if it
 quietly changed the result. `tests/test_chain.py` checks the gradient seam.
-`tests/test_learning.py` trains real chains and asserts they improve.
+`tests/test_learning.py` trains real chains against coggrid and asserts they
+improve.
 
 ## Relation to the original code
 

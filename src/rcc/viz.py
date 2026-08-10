@@ -10,22 +10,17 @@ repositories: the exact observer in blue, the truth in green, and anything the
 chain learned in purple.
 """
 
-from __future__ import annotations
-
 from collections.abc import Mapping, Sequence
-from typing import Any
-
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 __all__ = [
     "CHAIN",
     "IDEAL",
+    "MUTED",
     "TRUTH",
-    "plot_architecture",
     "plot_belief_accumulation",
     "plot_policy",
     "plot_training",
@@ -46,92 +41,11 @@ def _numpy(x) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# the architecture
-# --------------------------------------------------------------------------- #
-def plot_architecture(*, fig: Figure | None = None, figsize=(10.5, 4.2)) -> Figure:
-    """Draw the four stages and the seam between representation and inference.
-
-    The one thing this figure exists to make obvious: the arrow into the
-    classifier is dashed, because gradient does not travel back along it.
-
-    Returns
-    -------
-    Figure
-    """
-    fig = fig or plt.figure(figsize=figsize)
-    ax = fig.add_subplot(111)
-    ax.set_xlim(0, 10.6)
-    ax.set_ylim(0, 4.3)
-    ax.axis("off")
-
-    # The interactions fan out to three consumers, which cannot be drawn as
-    # three straight arrows without crossings. So they leave as one bus that
-    # runs under the forward path, and each consumer taps it from below.
-    boxes = [
-        (0.10, 2.30, 1.35, 0.80, MUTED, "variables\n$v_1 \\ldots v_C$"),
-        (1.95, 2.30, 2.05, 0.80, CHAIN, "1. interactions\n$Z_{ij} = ⟨K_i, Q_j⟩$"),
-        (4.95, 2.30, 2.30, 0.80, IDEAL, "2. classifier\nsoftmax(cumsum)"),
-        (8.05, 2.30, 1.45, 0.80, IDEAL, "belief\n$b(r)$"),
-        (5.60, 0.40, 2.30, 0.80, CHAIN, "3. generator\n$\\hat{p}$(obs)"),
-        (1.95, 0.40, 2.05, 0.80, TRUTH, "4. controller\naction"),
-        (4.95, 3.55, 2.30, 0.62, MUTED, "observations $o_{1..T}$"),
-    ]
-    for x, y, w, h, colour, label in boxes:
-        ax.add_patch(
-            FancyBboxPatch(
-                (x, y), w, h,
-                boxstyle="round,pad=0.06",
-                linewidth=1.6, edgecolor=colour, facecolor=colour + "1f",
-            )
-        )
-        ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=9)
-
-    def arrow(start, end, *, dashed=False, colour="0.35", rad=0.0, width=1.4):
-        ax.add_patch(
-            FancyArrowPatch(
-                start, end,
-                arrowstyle="-|>", mutation_scale=13, linewidth=width, color=colour,
-                linestyle=(0, (4, 3)) if dashed else "solid",
-                connectionstyle=f"arc3,rad={rad}",
-                shrinkA=0, shrinkB=0,
-            )
-        )
-
-    arrow((1.45, 2.70), (1.95, 2.70))
-    arrow((4.00, 2.70), (4.95, 2.70), dashed=True, colour=CHAIN, width=1.8)
-    arrow((7.25, 2.70), (8.05, 2.70))
-    arrow((6.10, 3.55), (6.10, 3.10))
-    arrow((8.45, 2.30), (7.70, 1.20))
-
-    # The interaction bus, and its two taps.
-    ax.plot([2.98, 6.75], [1.75, 1.75], color=CHAIN, linewidth=1.4, zorder=1)
-    ax.plot([2.98, 2.98], [2.30, 1.75], color=CHAIN, linewidth=1.4, zorder=1)
-    arrow((2.98, 1.75), (2.98, 1.20), colour=CHAIN)
-    arrow((6.75, 1.75), (6.75, 1.20), colour=CHAIN)
-
-    # The one arrow that runs backwards: prediction error, into the embeddings.
-    arrow((5.60, 0.80), (3.45, 2.30), colour=CHAIN, rad=0.32, dashed=True)
-    ax.text(
-        4.62, 1.05, "prediction error", fontsize=8, color=CHAIN,
-        ha="center", va="center", style="italic",
-    )
-    ax.text(
-        4.47, 2.92, "detached", fontsize=8.5, color=CHAIN,
-        ha="center", style="italic",
-    )
-    ax.set_title(
-        "A Representation Classification Chain", fontsize=12, pad=6, loc="left"
-    )
-    fig.tight_layout()
-    return fig
-
-
-# --------------------------------------------------------------------------- #
 # stage 2
 # --------------------------------------------------------------------------- #
 def plot_belief_accumulation(
     belief,
-    goal_index,
+    goal_ind,
     goal_value,
     posterior=None,
     episode: int = 0,
@@ -141,28 +55,16 @@ def plot_belief_accumulation(
 ) -> Figure:
     """Show one episode's belief filling in, step by step.
 
-    Parameters
-    ----------
-    belief:
-        ``(n_episodes, n_steps, n_contexts, n_realizations)`` from the chain.
-    goal_index:
-        ``(n_episodes,)`` — which active variable is the goal.
-    goal_value:
-        ``(n_episodes,)`` — the truth.
-    posterior:
-        Optional exact posterior in the same shape, drawn alongside for
-        comparison.
-    episode:
-        Which episode of the batch to draw.
-
-    Returns
-    -------
-    Figure
+    ``belief`` is ``(n_episodes, n_steps, n_contexts, n_realizations)`` from the
+    chain, ``goal_ind`` says which active variable is the goal and
+    ``goal_value`` is the truth, both ``(n_episodes,)``. An optional ``posterior``
+    in the shape of ``belief`` is drawn alongside for comparison, and ``episode``
+    picks which episode of the batch to draw.
     """
     belief = _numpy(belief)
-    goal_index = _numpy(goal_index)
+    goal_ind = _numpy(goal_ind)
     goal_value = _numpy(goal_value)
-    goal = int(goal_index[episode])
+    goal = int(goal_ind[episode])
     truth = int(goal_value[episode])
 
     chain_belief = belief[episode, :, goal]
@@ -173,7 +75,8 @@ def plot_belief_accumulation(
     fig = fig or plt.figure(figsize=figsize)
     axes = fig.subplots(1, len(panels) + 1, width_ratios=[1] * len(panels) + [0.85])
 
-    for ax, (name, values, colour) in zip(axes, panels, strict=False):
+    # The last axis is the line plot below, so only the image panels pair up here.
+    for ax, (name, values, colour) in zip(axes[:-1], panels, strict=True):
         ax.imshow(
             values.T, aspect="auto", origin="lower", cmap="magma",
             vmin=0, vmax=1, interpolation="nearest",
@@ -203,6 +106,18 @@ def plot_belief_accumulation(
 # --------------------------------------------------------------------------- #
 # training
 # --------------------------------------------------------------------------- #
+#: Label substring to (colour, linestyle). First match wins.
+_SERIES_STYLES = (("ideal", IDEAL, "--"), ("chance", MUTED, ":"))
+
+
+def _series_style(name: str) -> tuple[str, str]:
+    lowered = name.lower()
+    for token, colour, dash in _SERIES_STYLES:
+        if token in lowered:
+            return colour, dash
+    return CHAIN, "-"
+
+
 def plot_training(
     history: Mapping[str, Sequence[float]],
     *,
@@ -211,23 +126,12 @@ def plot_training(
     fig: Figure | None = None,
     figsize=(6.5, 4.0),
 ) -> Figure:
-    """Plot every series in ``history`` against training step.
+    """Plot every series in ``history`` against training iteration.
 
-    Parameters
-    ----------
-    history:
-        Maps a label to a sequence of per-step values. Labels containing
-        ``"ideal"`` are drawn in the exact-observer colour and dashed, anything
-        containing ``"chance"`` in grey and dotted, everything else in the
-        chain's colour.
-    smooth:
-        Width of a centred moving average. ``1`` disables smoothing.
-    ylabel:
-        Label for the vertical axis.
-
-    Returns
-    -------
-    Figure
+    ``history`` maps a label to one value per iteration. Labels containing
+    ``"ideal"`` are drawn in the exact-observer colour and dashed, anything
+    containing ``"chance"`` in grey and dotted, everything else in the chain's
+    colour. ``smooth`` is the width of a centred moving average, ``1`` disabling it.
     """
     fig = fig or plt.figure(figsize=figsize)
     ax = fig.add_subplot(111)
@@ -236,17 +140,10 @@ def plot_training(
         values = np.asarray(series, dtype=float)
         if smooth > 1 and values.size >= smooth:
             values = np.convolve(values, np.ones(smooth) / smooth, mode="valid")
-        lowered = name.lower()
-        style: dict[str, Any]
-        if "ideal" in lowered:
-            style = dict(color=IDEAL, linestyle="--")
-        elif "chance" in lowered:
-            style = dict(color=MUTED, linestyle=":")
-        else:
-            style = dict(color=CHAIN)
-        ax.plot(values, label=name, linewidth=1.6, **style)
+        colour, dash = _series_style(name)
+        ax.plot(values, label=name, linewidth=1.6, color=colour, linestyle=dash)
 
-    ax.set_xlabel("training step")
+    ax.set_xlabel("training iteration")
     ax.set_ylabel(ylabel)
     ax.legend(frameon=False, fontsize=9)
     ax.spines[["top", "right"]].set_visible(False)
@@ -267,22 +164,10 @@ def plot_policy(
 ) -> Figure:
     """Compare the controller's policy with the value it was chasing.
 
-    Only defined for two active variables, where the joint realization grid is
-    a plane that can be drawn.
-
-    Parameters
-    ----------
-    policy:
-        ``(n_episodes, n_realizations, n_realizations)``.
-    landscape:
-        Optional ``(n_episodes, n_realizations, n_realizations)`` of the true
-        value of each joint realization.
-    episode:
-        Which episode of the batch to draw.
-
-    Returns
-    -------
-    Figure
+    Only defined for two active variables, where the joint realization grid is a
+    plane that can be drawn. ``policy`` and the optional ``landscape`` of true
+    per-realization value are both ``(n_episodes, n_realizations, n_realizations)``;
+    ``episode`` picks which episode of the batch to draw.
     """
     policy = _numpy(policy)
     if policy.ndim != 3:

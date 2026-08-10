@@ -49,6 +49,11 @@ Environment = "https://github.com/johnschwarcz/coggrid"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rcc"]
 
+[tool.hatch.metadata]
+# coggrid installs from git rather than PyPI, which hatchling refuses to record
+# unless direct references are opted into.
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 # src is on the list so the docstring examples are executed, not just written.
 testpaths = ["tests", "src"]

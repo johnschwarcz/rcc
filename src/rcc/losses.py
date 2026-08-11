@@ -58,9 +58,10 @@ def reward_loss(goal_belief: Tensor, selection: Tensor, correct: Tensor, *,
 def prediction_loss(predicted_rates: Tensor, observed_rates: Tensor, *,
     correct: Tensor | None = None, chance: float = 0.0) -> Tensor:
     """Score the generator against the experienced observations.
-    predicted_rates, observed_rates: (n_episodes, n_observations); 
+    predicted_rates, observed_rates: (n_episodes, n_observations);
     observed is normally observations.mean(1)
     correct: (n_episodes,), biases loss to episodes with correct actions
+    chance: weight on the unconditional term, so 0 is correct episodes only
     returns: scalar
     """
     require_shape("observed_rates", observed_rates, predicted_rates.shape)
@@ -70,11 +71,10 @@ def prediction_loss(predicted_rates: Tensor, observed_rates: Tensor, *,
         return mean_error
 
     require_shape("correct", correct, (predicted_rates.shape[0],))
-    weight = correct[:, None]
-    total = weight.sum()
+    total = correct.sum()
     if float(total) == 0.0:
         return mean_error
-    weighted_error = (weight * error).sum() / total
+    weighted_error = (correct * error.mean(-1)).sum() / total
     return mean_error * chance + (1 - chance) * weighted_error
 
 def embedding_norm_penalty(keys: Tensor, queries: Tensor) -> Tensor:

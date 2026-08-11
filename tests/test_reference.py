@@ -313,7 +313,22 @@ def test_reward_loss_matches():
 
 
 def test_prediction_loss_matches():
-    """Transcribed from ``Model_backward.SSL_loss``."""
+    """Transcribed from ``Model_backward.SSL_loss``, in its unweighted form."""
+    predicted = torch.rand(5, CFG.n_observations)
+    observed = torch.rand(5, CFG.n_observations)
+
+    mine = prediction_loss(predicted, observed)
+    assert torch.allclose(mine, original_DKL_sym(predicted, observed).mean(), atol=1e-6)
+
+
+def test_prediction_loss_blends_two_terms_of_one_scale():
+    """A deliberate change: the weighted term is a mean, not a sum.
+
+    The original divided a sum over episodes *and* channels by a count of
+    episodes alone, so the conditional term arrived ``n_observations`` times
+    larger than the unconditional term it is mixed with. ``chance`` read as a
+    mixing weight but behaved as ``chance : (1 - chance) * n_observations``.
+    """
     predicted = torch.rand(5, CFG.n_observations)
     observed = torch.rand(5, CFG.n_observations)
     # At least one correct episode, or the original divides by zero.
@@ -323,9 +338,21 @@ def test_prediction_loss_matches():
     OPE = original_DKL_sym(predicted, observed)
     OPE__ACC = (correct[:, None] * OPE).sum() / correct[:, None].sum()
     theirs = OPE.mean() * chance + (1 - chance) * OPE__ACC
+    ours = OPE.mean() * chance + (1 - chance) * OPE__ACC / CFG.n_observations
 
     mine = prediction_loss(predicted, observed, correct=correct, chance=chance)
-    assert torch.allclose(mine, theirs, atol=1e-6)
+    assert torch.allclose(mine, ours, atol=1e-6)
+    assert not torch.allclose(mine, theirs, atol=1e-6)
+
+
+def test_the_blend_does_not_depend_on_the_channel_count():
+    """Which is the point: ``chance`` has to mean the same thing at any width."""
+    correct = torch.tensor([1.0, 0.0, 1.0, 0.0, 0.0])
+    losses = torch.stack([
+        prediction_loss(torch.full((5, n), 0.3), torch.full((5, n), 0.7),
+            correct=correct, chance=0.1)
+        for n in (1, 5, 20)])
+    assert torch.allclose(losses, losses[0], atol=1e-6)
 
 
 def test_prediction_loss_survives_a_batch_with_nothing_correct():

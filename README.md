@@ -294,10 +294,12 @@ improve.
 The architecture first appeared in
 [CognitiveGridworld](https://github.com/johnschwarcz/CognitiveGridworld) as five
 `nn.Module` mixins that passed state through instance attributes. This package
-computes the same functions with explicit arguments. Two behaviours were changed
-deliberately, and both are marked in `tests/test_reference.py`: the generator no
-longer collapses length-one axes, and the prediction loss no longer divides by
-zero on a batch where nothing was answered correctly.
+computes the same functions with explicit arguments. Three behaviours were changed
+deliberately, and each is marked in `tests/test_reference.py`: the generator no
+longer collapses length-one axes; the prediction loss no longer divides by zero on
+a batch where nothing was answered correctly; and that loss now averages its two
+terms the same way, so `chance` is a mixing weight rather than one that grew with
+the number of observation channels.
 
 ## Citation
 

@@ -207,7 +207,32 @@ not needed to import `rcc`.
 <img src="docs/images/belief_accumulation.png" width="100%">
 
 *One episode. The chain's belief and the exact posterior both concentrate as
-observations arrive; the dashed line is the true realization.*
+observations arrive; the dashed line is the true realization. A single episode
+can show the chain above the posterior — belief in the truth is linear in the
+belief, so any estimator sharper than the posterior scores higher on it. The
+comparison that means something is the average:*
+
+<img src="docs/images/belief_average.png" width="100%">
+
+*The same batch, averaged. Only the right panel is bounded by the exact observer:
+`argmax` is the Bayes decision rule, so nothing can be more often right than the
+posterior, while a sharper belief can and does sit above it on the left.*
+
+## Generalization
+
+coggrid holds a third of its variable pool back, so "a novel combination of known
+variables" is something you can measure rather than assert. `make_assets.py` scores
+the trained chain on both splits against both ideal observers.
+
+The comparison worth watching is `ideal` against `naive`. The joint observer knows
+the interactions; the naive one does the same inference assuming the active variables
+are independent. The gap between them is the factorization regret — the part of the
+task a chain can only get right by having represented the interaction structure.
+Beating chance is easy, and beating `naive` is the claim.
+
+This demonstrates the setup; it is not a replication. The paper's transfer result
+comes from a reinforcement-learning run over far more episodes than the figure above,
+so treat the held-out group as a baseline to improve on rather than as the result.
 
 ## Control
 
@@ -236,10 +261,14 @@ most. The star marks each panel's maximum.*
 ## Examples
 
 ```bash
-python examples/quickstart.py         # distil an exact posterior
-python examples/self_supervised.py    # learn the representation from prediction error
-python examples/transfer.py           # train on familiar variables, test on novel ones
+python examples/quickstart.py    # every stage trained, in as few lines as it goes
+python docs/make_assets.py       # the same run, instrumented, with every figure
 ```
+
+`quickstart.py` prints nothing and plots nothing on purpose: it is the shortest path
+from a world to a trained chain, so it reads as the API. `make_assets.py` is that run
+with the losses recorded, the generalization table printed, and the figures below
+written out.
 
 Every task and architecture parameter is a flag, so reshaping a run never means
 editing a file. `--help` lists them all:
@@ -252,17 +281,18 @@ python examples/quickstart.py --hidden-dim 512                    # a wider chai
 Task flags (`--n-vars`, `--n-contexts`, `--n-realizations`, `--n-observations`,
 `--embedding-dim`) reach both the world and the chain, because the two have to be
 describing the same task. `--n-steps` goes to the world alone — the chain reads the
-step count off the tensor it is handed. `--hidden-dim` is the chain's alone. Run controls are
-`--out DIR` to save figures instead of showing them, `--iterations N`, `--episodes N` and
-`--seed N`; without a seed each run explores fresh randomness. `docs/make_assets.py`
-takes the same flags.
+step count off the tensor it is handed. `--hidden-dim` and `--learn-embeddings` are the
+chain's alone. Run controls are `--out DIR` to save figures instead of showing them,
+`--iterations N`, `--batch-size N`, `--lr X` and `--seed N`; without a seed each run
+explores fresh randomness. `docs/make_assets.py` takes the same flags, plus
+`--control-iterations N` and `--control-lr X` for the stage 4 run it does.
 
 To change a default rather than pass it every time, pin it where the script parses
 its arguments — `args = arguments(n_realizations=8)` — and the command line still
 overrides. Each run prints the config it resolved to, so a figure is never
 ambiguous about the shape that produced it.
 
-All three train against coggrid, and say so if it is absent:
+Both train against coggrid, and say so if it is absent:
 
 ```bash
 pip install git+https://github.com/johnschwarcz/coggrid
@@ -270,8 +300,15 @@ pip install git+https://github.com/johnschwarcz/coggrid
 
 <img src="docs/images/training.png" width="70%">
 
-*`quickstart.py`: the chain's accuracy against the exact observer it is
-distilling, and chance.*
+*The chain's accuracy against the exact observer it is distilling, and chance.
+The dashed purple line is the same measurement on held-out variables, taken every
+25 iterations against a fixed batch the chain never trains on.*
+
+<img src="docs/images/losses.png" width="100%">
+
+*The two objectives that produced it. They never touch the same parameter: the
+classifier's error moves stage 2, and the generator's prediction error is the only
+gradient stage 1 ever sees.*
 
 ## Development
 

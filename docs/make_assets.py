@@ -1,133 +1,147 @@
-"""Regenerate the plots the README embeds.
-
+"""The whole project in one run, and the plots the README embeds.
     python docs/make_assets.py
-
-``architecture.png`` is not produced here — it is a hand-drawn schematic. This
-script regenerates the three figures that come out of a run: the training curve,
-the belief accumulation panel, and the controller's policy.
-
-Seeds are pinned here deliberately. Everywhere else in this repository the default
-is ``seed=None`` so each run explores fresh randomness; these are the one
-exception, because a README figure should not change every time it is rebuilt.
+The training curve, both objectives' losses, one episode's belief accumulation,
+that comparison averaged over the batch, how the chain does on variables it never
+trained on, and the controller's policy. architecture.png is hand-drawn, not
+produced here. seed=0 is pinned so a rebuild does not move the figures.
 """
-
 import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
+import rcc
 
-# Resolve the repository root without assuming __file__ exists: VS Code's "run in
-# interactive window" pastes this source into a cell rather than executing the
-# file, and a pasted cell has no __file__ at all.
-if globals().get("__file__") is not None:
-    ROOT = Path(__file__).resolve().parent.parent
-else:
-    _CWD = Path.cwd().resolve()
-    _ROOTS = (p for p in (_CWD, *_CWD.parents) if (p / "pyproject.toml").exists())
-    ROOT = next(_ROOTS, _CWD)
 
-# The examples already know how to build a world and convert a batch; this script
-# draws the same figures they do, so it borrows their plumbing rather than
-# restating it.
+def _repo_root() -> Path:
+    """The checkout holding examples/_common.py.
+    Searched for rather than derived: an interactive cell has no __file__ and an
+    arbitrary cwd, and an editable install points back at the checkout.
+    """
+    seeds = [Path.cwd(), Path(rcc.__file__).parent]
+    if globals().get("__file__") is not None:
+        seeds.insert(0, Path(__file__).parent)
+    for seed in seeds:
+        for path in (seed.resolve(), *seed.resolve().parents):
+            if (path / "examples" / "_common.py").exists():
+                return path
+    raise SystemExit("make_assets.py has to run from a checkout of the rcc repository.")
+
+ROOT = _repo_root()
 sys.path.insert(0, str(ROOT / "examples"))
 
 from _common import (  # noqa: E402
-    accuracy,
     arguments,
     describe,
     draw,
     embeddings,
+    evaluate,
+    random_preferences,
+    value_landscape,
     world_and_config,
 )
-from rcc import (  # noqa: E402
-    RCC,
-    controller_loss,
-    intrinsic_value,
-    select_goal,
-    supervised_loss,
+from rcc import RCC, Trainer  # noqa: E402
+from rcc.viz import (  # noqa: E402
+    plot_belief_accumulation,
+    plot_belief_average,
+    plot_generalization,
+    plot_losses,
+    plot_policy,
+    plot_training,
 )
-from rcc.viz import plot_belief_accumulation, plot_policy, plot_training  # noqa: E402
 
 if __name__ == "__main__":
-    # The same flags as the examples, so a figure can be rebuilt at a different
-    # shape: `python docs/make_assets.py --n-realizations 8`. Pin one here to
-    # change the default — arguments(..., n_realizations=8) — and the command line
-    # still wins. Only seed 0 and the --out fallback differ from the examples.
-    args = arguments(iterations=3000, episodes=528, seed=0, n_steps = 10)
+    # Every knob, spelled out so a figure can be reshaped from right here. The
+    # command line still wins: `python docs/make_assets.py --hidden-dim 512`.
+    args = arguments(
+        # task - reaches both the world and the chain
+        n_vars=500,
+        n_contexts=2,  
+        n_realizations=10,
+        n_observations=5,
+        embedding_dim=30,  # coggrid orthogonalizes per channel, so >= n_observations
+        n_steps=30,
+        # architecture - the chain alone
+        hidden_dim=1000,
+        learn_embeddings=True,  # False hands stage 1 the world's true embeddings
+        # run
+        iterations=50000,
+        batch_size=5000,
+        lr=1e-4,
+        control_iterations=400,
+        control_lr=3e-3,
+        seed=0,
+    )
     out = args.out or ROOT / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
 
-    world, cfg = world_and_config(args, learn_embeddings=False)
+    world, cfg = world_and_config(args)
     print(describe(args, cfg))
-    chain = RCC(cfg, **embeddings(world))
-    optimizer = torch.optim.Adam(chain.inference_parameters(), lr=1e-3)
+    # Supplying the world's embeddings and learning them are mutually exclusive.
+    chain = RCC(cfg, **({} if cfg.learn_embeddings else embeddings(world)))
+    trainer = Trainer(chain, lr=args.lr, control_lr=args.control_lr,
+        generator=torch.Generator().manual_seed(0))
 
-    history: dict[str, list[float]] = {"chain accuracy": [], "ideal": [], "chance": []}
+    # Generalization. coggrid holds a third of the variable pool back, so held_out is
+    # variables the chain was never trained on. Both batches are drawn once and held
+    # fixed, so the held-out curve below tracks the same episodes all the way through.
+    evaluation = {split: draw(world, args.batch_size, split=split, rng=args.seed)
+        for split in ("train", "held_out")}
+    # Each measurement is a forward pass over the whole batch, so not every iteration.
+    evaluate_every = 250
+
+    history: dict[str, list[float]] = {
+        "chain accuracy": [], "held out": [], "ideal": [], "chance": []}
+    losses: dict[str, list[float]] = {"classifier": [], "generator": []}
     for iteration in range(args.iterations):
-        batch = draw(world, args.episodes)
-        belief, _ = chain(batch.observations, batch.ctx_inds)
-        loss = supervised_loss(belief, batch.posterior)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        with torch.no_grad():
-            goal = select_goal(belief, batch.goal_ind)
-        history["chain accuracy"].append(accuracy(goal, batch.goal_value))
+        batch = draw(world, args.batch_size)
+        step = trainer.step(batch.observations, batch.ctx_inds, batch.posterior,
+            batch.goal_ind, batch.goal_value)
+        history["chain accuracy"].append(step.accuracy)
         history["ideal"].append(batch.ideal)
         history["chance"].append(1 / cfg.n_realizations)
+        losses["classifier"].append(step.classifier_loss)
+        losses["generator"].append(step.generator_loss)
+        if iteration % evaluate_every == 0:
+            history["held out"].append(evaluate(chain, evaluation["held_out"])["chain"])
         if iteration % 200 == 0:
-            print(f"  iter {iteration:>4}  accuracy {history['chain accuracy'][-1]:.3f}")
+            print(f"  iter {iteration:>4}  acc {step.accuracy:.3f}"
+                f"  held out {history['held out'][-1]:.3f}"
+                f"  classifier {step.classifier_loss:.4f}"
+                f"  generator {step.generator_loss:.4f}")
+
+    scores = {split: evaluate(chain, episodes) for split, episodes in evaluation.items()}
+    print(f"\n{'':10}" + "".join(f"{name:>8}" for name in scores["train"]))
+    for split, row in scores.items():
+        print(f"{split:10}" + "".join(f"{value:>8.3f}" for value in row.values()))
+    print(f"{'chance':10}{1 / cfg.n_realizations:>8.3f}")
 
     # Stage 4 gets its own short run: an untrained policy is near-uniform, and a
     # figure of one would say nothing about the controller.
-    rng = torch.Generator().manual_seed(0)
-    preferences = (torch.rand(cfg.n_observations, generator=rng) > 0.5).float()
-
-    def value_landscape(rates):
-        """What every joint realization is worth, given the preferences.
-
-        ``rates`` is coggrid's likelihood table, one Bernoulli rate per channel per
-        hypothetical joint realization.
-        """
-        n_episodes = rates.shape[0]
-        per_action = rates.reshape(n_episodes, cfg.n_observations, -1).transpose(1, 2)
-        value = intrinsic_value(per_action.reshape(-1, cfg.n_observations), preferences)
-        return value.reshape(n_episodes, *cfg.realization_shape)
-
-    control = torch.optim.Adam(chain.control_parameters(), lr=3e-3)
-    for iteration in range(400):
-        acting = draw(world, args.episodes)
-        policy, predicted = chain.controller(chain.encoder(acting.ctx_inds).score)
-        actions, log_prob, entropy = chain.controller.act(policy, rng)
-        taken = value_landscape(acting.rates)[
-            torch.arange(args.episodes), actions[:, 0], actions[:, 1]
-        ]
-        loss = controller_loss(taken, predicted, log_prob, entropy)
-        control.zero_grad()
-        loss.backward()
-        control.step()
+    preferences = random_preferences(cfg)
+    for iteration in range(args.control_iterations):
+        acting = draw(world, args.batch_size)
+        control = trainer.control_step(
+            acting.ctx_inds, value_landscape(acting.rates, preferences))
         if iteration % 50 == 0:
-            print(f"  control iter {iteration:>4}  value {taken.mean().item():.3f}")
+            print(f"  control iter {iteration:>4}  value {control.value:.3f}")
 
     # A fresh batch to draw, so the figure shows the trained policy on episodes it
     # was not just updated on.
-    acting = draw(world, args.episodes)
+    acting = draw(world, args.batch_size)
     with torch.no_grad():
         policy, _ = chain.controller(chain.encoder(acting.ctx_inds).score)
 
     for name, fig in (
         ("training", plot_training(history, smooth=25)),
-        (
-            "belief_accumulation",
-            plot_belief_accumulation(
-                belief, batch.goal_ind, batch.goal_value, batch.posterior
-            ),
-        ),
-        ("policy", plot_policy(policy, value_landscape(acting.rates))),
+        ("losses", plot_losses(losses, smooth=25)),
+        ("belief_accumulation", plot_belief_accumulation(
+            step.belief, batch.goal_ind, batch.goal_value, batch.posterior)),
+        ("belief_average", plot_belief_average(
+            step.belief, batch.goal_ind, batch.goal_value, batch.posterior)),
+        ("generalization", plot_generalization(scores, chance=1 / cfg.n_realizations)),
+        ("policy", plot_policy(policy, value_landscape(acting.rates, preferences))),
     ):
         path = out / f"{name}.png"
         fig.savefig(path, dpi=110, bbox_inches="tight")
-        # These are pyplot-managed, so they stay alive until closed.
-        plt.close(fig)
+        plt.close(fig)  # These are pyplot-managed, so they stay alive until closed.
         print("wrote", path, f"({path.stat().st_size / 1e3:.0f} kB)")

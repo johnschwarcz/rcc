@@ -8,8 +8,9 @@ import torch
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
-__all__ = ["CHAIN", "IDEAL", "MUTED", "TRUTH",
-    "plot_belief_accumulation", "plot_policy", "plot_training"]
+__all__ = ["CHAIN", "IDEAL", "MUTED", "TRUTH", "plot_belief_accumulation",
+    "plot_belief_average", "plot_generalization", "plot_losses", "plot_policy",
+    "plot_training"]
 
 CHAIN = "#7b52ab"  # what the chain learned
 IDEAL = "#1f77b4"  # what an exact observer would have concluded
@@ -60,8 +61,55 @@ def plot_belief_accumulation(belief, goal_ind, goal_value, posterior=None,
     fig.tight_layout()
     return fig
 
+def _goal_belief(belief, goal_ind) -> np.ndarray:
+    """The belief over the one variable being asked about.
+    belief: (n_episodes, n_steps, n_contexts, n_realizations)
+    returns: (n_episodes, n_steps, n_realizations)
+    """
+    belief, goal_ind = _numpy(belief), _numpy(goal_ind)
+    return belief[np.arange(belief.shape[0]), :, goal_ind]
+
+def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
+    fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
+    """Compare the chain with the exact observer across a whole batch.
+    belief, posterior: (n_episodes, n_steps, n_contexts, n_realizations)
+    goal_ind, goal_value: (n_episodes,); posterior is optional
+    returns: Figure
+
+    Two panels because the two say different things. Only accuracy is bounded by
+    the exact observer: belief-in-truth is linear in the belief, so a sharper
+    estimator scores higher on it whether or not it is more often right.
+    """
+    goal_value = _numpy(goal_value)
+    episodes = np.arange(goal_value.shape[0])
+    series = [("chain", _goal_belief(belief, goal_ind), CHAIN)]
+    if posterior is not None:
+        series.append(("exact posterior", _goal_belief(posterior, goal_ind), IDEAL))
+
+    fig = fig or plt.figure(figsize=figsize)
+    truth_ax, accuracy_ax = fig.subplots(1, 2)
+    for name, goal, colour in series:
+        truth_ax.plot(goal[episodes, :, goal_value].mean(0), color=colour,
+            linewidth=1.8, label=name)
+        accuracy_ax.plot((goal.argmax(-1) == goal_value[:, None]).mean(0), color=colour,
+            linewidth=1.8, label=name)
+
+    chance = 1 / series[0][1].shape[-1]
+    panels = ((truth_ax, "mean belief in the truth"), (accuracy_ax, "accuracy"))
+    for ax, title in panels:
+        ax.axhline(chance, color=MUTED, linestyle=":", linewidth=1.2, label="chance")
+        ax.set_xlabel("step")
+        ax.set_ylim(0, 1)
+        ax.set_title(title, fontsize=10)
+        ax.legend(fontsize=8, frameon=False)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.suptitle(f"averaged over {len(episodes)} episodes", fontsize=9, color=MUTED)
+    fig.tight_layout()
+    return fig
+
 # --------------------------------------------------------------------- training
-_SERIES_STYLES = (("ideal", IDEAL, "--"), ("chance", MUTED, ":"))
+_SERIES_STYLES = (("ideal", IDEAL, "--"), ("chance", MUTED, ":"),
+    ("naive", MUTED, "-."), ("held", CHAIN, "--"))
 
 def _series_style(name: str) -> tuple[str, str]:
     """Label substring --> (colour, linestyle). First match wins."""
@@ -71,25 +119,90 @@ def _series_style(name: str) -> tuple[str, str]:
             return colour, dash
     return CHAIN, "-"
 
+def _smoothed(series: Sequence[float], smooth: int) -> np.ndarray:
+    """Centred moving average of width smooth.
+    series: one value per iteration
+    returns: (len(series) - smooth + 1,), or the series itself when it is shorter
+    """
+    values = np.asarray(series, dtype=float)
+    if smooth > 1 and values.size >= smooth:
+        values = np.convolve(values, np.ones(smooth) / smooth, mode="valid")
+    return values
+
 def plot_training(history: Mapping[str, Sequence[float]], *, smooth: int = 1,
     ylabel: str = "goal accuracy", fig: Figure | None = None,
     figsize=(6.5, 4.0)) -> Figure:
     """Plot every series in history against training iteration.
-    history: label --> one value per iteration
+    history: label --> one value per iteration, or fewer measured at an even cadence
     smooth: width of a centred moving average, 1 disabling it
     returns: Figure
     """
     fig = fig or plt.figure(figsize=figsize)
     ax = fig.add_subplot(111)
+    iterations = max(len(series) for series in history.values())
     for name, series in history.items():
-        values = np.asarray(series, dtype=float)
-        if smooth > 1 and values.size >= smooth:
-            values = np.convolve(values, np.ones(smooth) / smooth, mode="valid")
+        # Only a per-iteration series is noisy enough to want smoothing, and only it
+        # is indexed by iteration; one measured periodically is spread evenly across
+        # the run rather than crushed against the left edge.
+        values = _smoothed(series, smooth if len(series) == iterations else 1)
         colour, dash = _series_style(name)
-        ax.plot(values, label=name, linewidth=1.6, color=colour, linestyle=dash)
+        ax.plot(np.linspace(0, iterations - 1, len(values)), values, label=name,
+            linewidth=1.6, color=colour, linestyle=dash)
 
     ax.set_xlabel("training iteration")
     ax.set_ylabel(ylabel)
+    ax.legend(frameon=False, fontsize=9)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+def plot_losses(losses: Mapping[str, Sequence[float]], *, smooth: int = 1,
+    fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
+    """Plot one objective per panel against training iteration.
+    losses: label --> one value per iteration
+    smooth: width of a centred moving average, 1 disabling it
+    returns: Figure
+
+    A panel each rather than one pair of axes: separate objectives sit on their own
+    scale and share no floor, so a single y-axis would invite reading one against
+    the other.
+    """
+    fig = fig or plt.figure(figsize=figsize)
+    axes = fig.subplots(1, len(losses), squeeze=False)[0]
+    for ax, (name, series) in zip(axes, losses.items(), strict=True):
+        ax.plot(_smoothed(series, smooth), linewidth=1.6, color=CHAIN)
+        ax.set_xlabel("training iteration")
+        ax.set_ylabel("loss")
+        ax.set_title(name, fontsize=10)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+# --------------------------------------------------------------- generalization
+def plot_generalization(scores: Mapping[str, Mapping[str, float]], *,
+    chance: float | None = None, fig: Figure | None = None,
+    figsize=(6.5, 4.0)) -> Figure:
+    """Bar per observer, group per split of the variable pool.
+    scores: split --> observer label --> accuracy in [0, 1]
+    chance: drawn across the panel when given
+    returns: Figure
+    """
+    splits, labels = list(scores), list(next(iter(scores.values())))
+    group = np.arange(len(splits))
+    width = 0.8 / len(labels)
+
+    fig = fig or plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111)
+    for offset, label in enumerate(labels):
+        ax.bar(group + offset * width, [scores[split][label] for split in splits],
+            width, label=label, color=_series_style(label)[0])
+    if chance is not None:
+        ax.axhline(chance, color=MUTED, linestyle=":", linewidth=1.2, label="chance")
+
+    ax.set_xticks(group + width * (len(labels) - 1) / 2)
+    ax.set_xticklabels(splits)
+    ax.set_ylabel("goal accuracy")
+    ax.set_ylim(0, 1)
     ax.legend(frameon=False, fontsize=9)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()

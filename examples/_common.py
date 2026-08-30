@@ -1,7 +1,7 @@
-"""Shared plumbing for the examples — arguments, the world, numpy to torch.
+"""Shared plumbing for the scripts — arguments, the world, numpy to torch, scoring.
 
-None of this is the architecture. It lives here so that each example reads as the
-training loop it exists to show, and nothing else.
+None of this is the architecture. It lives here so that each script reads as the
+run it exists to show, and nothing else.
 
 `coggrid <https://github.com/johnschwarcz/coggrid>`_ is a development dependency,
 never a runtime one: nothing in ``src/rcc`` imports it, and nothing should. The
@@ -9,12 +9,11 @@ examples need a real environment to run against, which is what it is for.
 """
 
 import argparse
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 import torch
 from torch import Tensor
-from rcc import RCCConfig
+from rcc import RCC, RCCConfig, intrinsic_value, select_goal
 
 try:
     from coggrid import CogGridConfig, World, run_observers
@@ -58,9 +57,9 @@ class Batch(NamedTuple):
 N_STEPS, HIDDEN_DIM = 20, 256
 
 #: What :func:`arguments` collects that describes the task or the architecture.
-_SETTINGS = (*SHAPE, "n_steps", "hidden_dim", "seed")
+_SETTINGS = (*SHAPE, "n_steps", "hidden_dim", "learn_embeddings", "seed")
 #: Everything else it collects — how long to run and where to put the output.
-_RUN = ("out", "iterations", "episodes")
+_RUN = ("out", "iterations", "batch_size", "lr", "control_iterations", "control_lr")
 
 
 def arguments(**defaults: Any) -> argparse.Namespace:
@@ -79,7 +78,8 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     """
     unknown = sorted(set(defaults) - set(_SETTINGS) - set(_RUN))
     if unknown:
-        raise TypeError(f"arguments() got unexpected defaults: {unknown}")
+        raise TypeError(f"arguments() got unexpected defaults: {unknown}. "
+                        f"Settable here: {sorted((*_SETTINGS, *_RUN))}")
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
 
@@ -91,8 +91,9 @@ def arguments(**defaults: Any) -> argparse.Namespace:
         "--iterations", type=int, default=5000, help="training iterations"
     )
     run.add_argument(
-        "--episodes", type=int, default=128, help="episodes per iteration (batch size)"
+        "--batch-size", type=int, default=128, help="episodes drawn per iteration"
     )
+    run.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
     run.add_argument(
         "--seed", type=int, default=None,
         help="pin the run; the default explores fresh randomness",
@@ -110,6 +111,14 @@ def arguments(**defaults: Any) -> argparse.Namespace:
 
     chain = parser.add_argument_group("architecture (the chain only)")
     chain.add_argument("--hidden-dim", type=int, default=HIDDEN_DIM)
+    chain.add_argument(
+        "--learn-embeddings", action=argparse.BooleanOptionalAction, default=False,
+        help="stage 1 finds the representation; the default hands it the world's",
+    )
+
+    stage4 = parser.add_argument_group("control (stage 4, where a script trains one)")
+    stage4.add_argument("--control-iterations", type=int, default=400)
+    stage4.add_argument("--control-lr", type=float, default=3e-3)
 
     parser.set_defaults(**defaults)
     return parser.parse_known_args()[0]
@@ -124,7 +133,7 @@ def describe(args: argparse.Namespace, cfg: RCCConfig) -> str:
     """
     return (
         f"{cfg}\n"
-        f"{args.iterations} iterations x {args.episodes} episodes per batch "
+        f"{args.iterations} iterations x {args.batch_size} episodes per batch "
         f"x {args.n_steps} observations per episode"
     )
 
@@ -211,23 +220,47 @@ def accuracy(goal_belief: Tensor, goal_value: Tensor) -> float:
     return (goal_belief[:, -1].argmax(-1) == goal_value).float().mean().item()
 
 
-def tail(values: list[float], n: int = 50) -> float:
-    """Mean of the last ``n`` values, or of all of them if there are fewer.
+def evaluate(chain: RCC, batch: Batch) -> dict[str, float]:
+    """The chain's accuracy on one batch, beside both ideal observers'.
 
-    Dividing by ``n`` regardless would silently scale down what a short run reports.
+    Takes a batch rather than drawing one so that a caller measuring repeatedly
+    through training watches the same episodes every time.
+
+    The joint observer knows the interactions and the naive one assumes the active
+    variables are independent, so the gap between those two is the part of the task
+    that can only be got right by having represented the interaction structure.
     """
-    return sum(values[-n:]) / len(values[-n:])
+    with torch.no_grad():
+        belief, _ = chain(batch.observations, batch.ctx_inds)
+    return {
+        "chain": accuracy(select_goal(belief, batch.goal_ind), batch.goal_value),
+        "ideal": batch.ideal,
+        "naive": batch.naive,
+    }
 
 
-def save_or_show(figures: Mapping[str, Any], out: Path | None) -> None:
-    """Write every figure into ``out``, or show them when ``out`` is ``None``."""
-    if out is None:
-        import matplotlib.pyplot as plt
+def random_preferences(cfg: RCCConfig, seed: int = 0) -> Tensor:
+    """Which observation channels the chain wants to see on, as a 0/1 vector.
 
-        plt.show()
-        return
-    out.mkdir(parents=True, exist_ok=True)
-    for name, figure in figures.items():
-        path = out / f"{name}.png"
-        figure.savefig(path, dpi=110, bbox_inches="tight")
-        print("wrote", path)
+    Pinned by default, and by a generator of its own: stage 4's figure is about a
+    policy finding the best joint realization, which only means something against a
+    fixed set of preferences.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    return (torch.rand(cfg.n_observations, generator=generator) > 0.5).float()
+
+
+def value_landscape(rates: Tensor, preferences: Tensor) -> Tensor:
+    """What every joint realization is worth, given the preferences.
+
+    ``rates`` is coggrid's likelihood table, one Bernoulli rate per channel per
+    hypothetical joint realization.
+
+    rates: (n_episodes, n_observations, *realization_shape)
+    preferences: (n_observations,)
+    returns: (n_episodes, *realization_shape)
+    """
+    n_episodes, n_observations = rates.shape[:2]
+    per_action = rates.reshape(n_episodes, n_observations, -1).transpose(1, 2)
+    value = intrinsic_value(per_action.reshape(-1, n_observations), preferences)
+    return value.reshape(n_episodes, *rates.shape[2:])

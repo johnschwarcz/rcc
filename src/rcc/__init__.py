@@ -39,6 +39,8 @@ Layout
                   the module rather than at the top level; import them from
                   ``rcc.losses`` if you are writing an objective of your own.
 ``chain``         :class:`RCC`, which holds all four.
+``training``      :class:`Trainer` — those objectives, each with its own
+                  optimizer, and the order they are stepped in.
 ``viz``           Plotting. Every function returns a figure; none call ``show()``.
 
 Names follow `coggrid <https://github.com/johnschwarcz/coggrid>`_, the
@@ -62,6 +64,7 @@ from .losses import (
     reward_loss,
     supervised_loss,
 )
+from .training import ControlStep, Trainer, TrainingStep
 
 __version__ = "0.1.0"
 
@@ -92,4 +95,8 @@ __all__ = [
     "prediction_loss",
     "embedding_norm_penalty",
     "controller_loss",
+    # training
+    "Trainer",
+    "TrainingStep",
+    "ControlStep",
 ]

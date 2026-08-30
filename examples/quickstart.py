@@ -1,75 +1,42 @@
-"""Train a chain to match an exact posterior, and watch it accumulate evidence.
+"""The whole project, as short as it goes.
 
     python examples/quickstart.py
 
-The chain is handed the world's true embeddings, which isolates stage 2: the only
-thing learned here is how to turn an observation stream into a belief. See
-``self_supervised.py`` for the run where stage 1 has to find the representation
-for itself.
+Every stage trained, nothing printed and nothing plotted, so this reads as the API
+rather than as an experiment: a world, a chain, a trainer, and the two loops. See
+``docs/make_assets.py`` for the same run instrumented — losses, figures, and how
+the chain does on variables it never trained on.
 
-Episodes are drawn fresh every step from the world's own generator, so nothing
-can be memorized; ``--seed`` pins that generator and the chain's initialization.
+Every task and architecture parameter is a flag; ``--help`` lists them.
 """
 
 import torch
 from _common import (
-    accuracy,
     arguments,
-    describe,
     draw,
     embeddings,
-    save_or_show,
-    tail,
+    random_preferences,
+    value_landscape,
     world_and_config,
 )
-from rcc import RCC, select_goal, supervised_loss
+from rcc import RCC, Trainer
 
-# Every task and architecture parameter is a flag; `--help` lists them.
-# Pin one here and the command line still overrides it, e.g.
-#     args = arguments(n_realizations=8, hidden_dim=512)
-args = arguments()
-world, cfg = world_and_config(args, learn_embeddings=False)
-print(describe(args, cfg))
-chain = RCC(cfg, **embeddings(world))
-optimizer = torch.optim.Adam(chain.inference_parameters(), lr=3e-3)
+args = arguments(learn_embeddings=True, lr=3e-3)
+world, cfg = world_and_config(args)
+# Supplying the world's embeddings and learning them are mutually exclusive.
+chain = RCC(cfg, **({} if cfg.learn_embeddings else embeddings(world)))
+trainer = Trainer(chain, lr=args.lr, control_lr=args.control_lr,
+    generator=None if args.seed is None else torch.Generator().manual_seed(args.seed))
 
-history: dict[str, list[float]] = {"chain accuracy": [], "ideal": [], "chance": []}
-for iteration in range(args.iterations):
-    batch = draw(world, args.episodes)
-    belief, _ = chain(batch.observations, batch.ctx_inds)
+# Stages 1 to 3: a belief distilled from the exact posterior, and a representation
+# learned from the generator's prediction error.
+for _ in range(args.iterations):
+    batch = draw(world, args.batch_size)
+    trainer.step(batch.observations, batch.ctx_inds, batch.posterior,
+        batch.goal_ind, batch.goal_value)
 
-    loss = supervised_loss(belief, batch.posterior)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    with torch.no_grad():
-        correct = accuracy(select_goal(belief, batch.goal_ind), batch.goal_value)
-    history["chain accuracy"].append(correct)
-    history["ideal"].append(batch.ideal)
-    history["chance"].append(1 / cfg.n_realizations)
-
-    if iteration % 100 == 0:
-        print(
-            f"iter {iteration:>4}  loss {loss.item():.4f}  "
-            f"accuracy {correct:.3f}  ideal {batch.ideal:.3f}"
-        )
-
-print(
-    f"\nfinal   accuracy {tail(history['chain accuracy']):.3f}"
-    f"   ideal {tail(history['ideal']):.3f}"
-    f"   chance {1 / cfg.n_realizations:.3f}"
-)
-
-# Plotting is optional, so it is imported only once the training has finished.
-from rcc.viz import plot_belief_accumulation, plot_training  # noqa: E402
-
-save_or_show(
-    {
-        "training": plot_training(history, smooth=25),
-        "belief_accumulation": plot_belief_accumulation(
-            belief, batch.goal_ind, batch.goal_value, batch.posterior
-        ),
-    },
-    args.out,
-)
+# Stage 4: act on the interactions alone, chasing the preferred observations.
+preferences = random_preferences(cfg)
+for _ in range(args.control_iterations):
+    acting = draw(world, args.batch_size)
+    trainer.control_step(acting.ctx_inds, value_landscape(acting.rates, preferences))

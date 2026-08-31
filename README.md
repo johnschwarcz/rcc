@@ -283,7 +283,8 @@ Task flags (`--n-vars`, `--n-contexts`, `--n-realizations`, `--n-observations`,
 describing the same task. `--n-steps` goes to the world alone — the chain reads the
 step count off the tensor it is handed. `--hidden-dim` and `--learn-embeddings` are the
 chain's alone. Run controls are `--out DIR` to save figures instead of showing them,
-`--iterations N`, `--batch-size N`, `--lr X` and `--seed N`; without a seed each run
+`--iterations N`, `--batch-size N`, `--classifier-lr X`, `--generator-lr X` and
+`--seed N`; without a seed each run
 explores fresh randomness. `docs/make_assets.py` takes the same flags, plus
 `--control-iterations N` and `--control-lr X` for the stage 4 run it does.
 

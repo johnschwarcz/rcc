@@ -66,6 +66,11 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
 
+[tool.ruff.lint.per-file-ignores]
+# The entry point is written to a different taste from the package: a call whose
+# arguments would otherwise wrap is left on one line, however long that gets.
+"docs/make_assets.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 # Imports stay contiguous — sorted, but with no blank line between the future,
 # stdlib, third-party and local groups.

@@ -21,19 +21,18 @@ from _common import (
 )
 from rcc import RCC, Trainer
 
-args = arguments(learn_embeddings=True, lr=3e-3)
+args = arguments(learn_embeddings=True, classifier_lr=3e-3)
 world, cfg = world_and_config(args)
 # Supplying the world's embeddings and learning them are mutually exclusive.
 chain = RCC(cfg, **({} if cfg.learn_embeddings else embeddings(world)))
-trainer = Trainer(chain, lr=args.lr, control_lr=args.control_lr,
+trainer = Trainer(chain, classifier_lr=args.classifier_lr, control_lr=args.control_lr,
     generator=None if args.seed is None else torch.Generator().manual_seed(args.seed))
 
-# Stages 1 to 3: a belief distilled from the exact posterior, and a representation
-# learned from the generator's prediction error.
+# Stages 1 to 3: a belief taught by the binary verdict on one committed answer,
+# and a representation learned from the generator's prediction error.
 for _ in range(args.iterations):
     batch = draw(world, args.batch_size)
-    trainer.step(batch.observations, batch.ctx_inds, batch.posterior,
-        batch.goal_ind, batch.goal_value)
+    trainer.step(batch.observations, batch.ctx_inds, batch.goal_ind, batch.goal_value)
 
 # Stage 4: act on the interactions alone, chasing the preferred observations.
 preferences = random_preferences(cfg)

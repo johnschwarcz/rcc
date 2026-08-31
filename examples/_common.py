@@ -9,8 +9,11 @@ examples need a real environment to run against, which is what it is for.
 """
 
 import argparse
+import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
+import numpy as np
 import torch
 from torch import Tensor
 from rcc import RCC, RCCConfig, intrinsic_value, select_goal
@@ -24,6 +27,12 @@ except ImportError:  # pragma: no cover - exercised only without the extra
     ) from None
 
 Split = Literal["train", "held_out"]
+
+#: coggrid's two variable pools, named here so that no script has to spell them.
+#: ``TRAIN`` allows at most one held-out variable per episode and never a held-out
+#: goal; ``HELD_OUT`` draws every active variable from the held-out pool.
+TRAIN: Split = "train"
+HELD_OUT: Split = "held_out"
 
 #: Default shape of the task, read by *both* packages — the field names are shared
 #: deliberately, so the environment and the chain always describe the same task.
@@ -56,10 +65,18 @@ class Batch(NamedTuple):
 #: Defaults for the two shape fields coggrid and rcc do not share.
 N_STEPS, HIDDEN_DIM = 20, 256
 
+#: Task fields that reach the world alone — coggrid has them, RCCConfig does not.
+_WORLD_EXTRA = ("n_steps", "n_held_out_vars", "likelihood_temp", "likelihood_freq")
+
 #: What :func:`arguments` collects that describes the task or the architecture.
-_SETTINGS = (*SHAPE, "n_steps", "hidden_dim", "learn_embeddings", "seed")
-#: Everything else it collects — how long to run and where to put the output.
-_RUN = ("out", "iterations", "batch_size", "lr", "control_iterations", "control_lr")
+_SETTINGS = (*SHAPE, *_WORLD_EXTRA, "hidden_dim", "learn_embeddings", "seed")
+#: Everything else it collects — how long to run, how to weight each objective, and
+#: where to put the output. Every one of these is a knob worth sweeping.
+_RUN = ("out", "iterations", "batch_size", "device", "micro_batch",
+        "classifier_lr",
+        "generator_lr", "control_iterations", "control_lr",
+        "classifier_entropy_bonus", "controller_entropy_bonus",
+        "evaluate_every", "eval_episodes")
 
 
 def arguments(**defaults: Any) -> argparse.Namespace:
@@ -93,10 +110,45 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     run.add_argument(
         "--batch-size", type=int, default=128, help="episodes drawn per iteration"
     )
-    run.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
+    run.add_argument(
+        "--device", default=None,
+        help="torch device; the default takes cuda when it is available",
+    )
+    run.add_argument(
+        "--micro-batch", type=int, default=None,
+        help="split each batch into slices of this many episodes, accumulating "
+             "their gradients; a memory knob, leaving the batch what a step means",
+    )
+    run.add_argument("--classifier-lr", type=float, default=1e-3,
+                     help="Adam learning rate for the inference objective (stage 2)")
+    run.add_argument(
+        "--generator-lr", type=float, default=None,
+        help="Adam learning rate for the estimation objective, which is stages 1 "
+             "and 3 together; defaults to --classifier-lr",
+    )
+    run.add_argument(
+        "--evaluate-every", type=int, default=25,
+        help="iterations between held-out measurements; each is a forward pass",
+    )
+    run.add_argument(
+        "--eval-episodes", type=int, default=None,
+        help="episodes per evaluation batch; defaults to --batch-size",
+    )
     run.add_argument(
         "--seed", type=int, default=None,
         help="pin the run; the default explores fresh randomness",
+    )
+
+    # The weights that decide what each objective is actually asking for. They are
+    # easy to leave at their defaults without noticing they were ever choices.
+    objective = parser.add_argument_group("objectives (what each loss asks for)")
+    objective.add_argument(
+        "--classifier-entropy-bonus", type=float, default=0.1,
+        help="reward_loss's entropy bonus",
+    )
+    objective.add_argument(
+        "--controller-entropy-bonus", type=float, default=0.05,
+        help="controller_loss's entropy bonus; constant, never decayed",
     )
 
     # ASCII in the group titles: a Windows console renders them in cp1252, where an
@@ -107,6 +159,18 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     task.add_argument(
         "--n-steps", type=int, default=N_STEPS,
         help="observations per episode (the trajectory the chain integrates)",
+    )
+    task.add_argument(
+        "--n-held-out-vars", type=int, default=None,
+        help="size of the held-out pool; defaults to a third of n_vars",
+    )
+    task.add_argument(
+        "--likelihood-temp", type=float, default=2.0,
+        help="scales the interaction potentials before the sigmoid; the paper's 2",
+    )
+    task.add_argument(
+        "--likelihood-freq", type=float, default=1.0,
+        help="periods in the sinusoidal value profile; >1 makes the map multimodal",
     )
 
     chain = parser.add_argument_group("architecture (the chain only)")
@@ -156,19 +220,15 @@ def world_and_config(
     shape = {**SHAPE, **{k: v for k, v in overrides.items() if k in SHAPE}}
     rcc_only = {k: v for k, v in overrides.items() if k not in SHAPE}
     seed = rcc_only.pop("seed", None)
-    n_steps = rcc_only.pop("n_steps", N_STEPS)
     hidden_dim = rcc_only.pop("hidden_dim", HIDDEN_DIM)
+    world_extra = {k: rcc_only.pop(k) for k in _WORLD_EXTRA if k in rcc_only}
+    world_extra.setdefault("n_steps", N_STEPS)
     # A third of the pool held out, so a "novel pair" comes from more than one
     # variable; coggrid's default of n_vars // 10 would leave a single one, and a
     # pair drawn from a pool of one is the same variable twice.
-    world = World(
-        CogGridConfig(
-            **shape,
-            n_steps=n_steps,
-            n_held_out_vars=max(2, shape["n_vars"] // 3),
-            seed=seed,
-        )
-    )
+    if world_extra.get("n_held_out_vars") is None:
+        world_extra["n_held_out_vars"] = max(2, shape["n_vars"] // 3)
+    world = World(CogGridConfig(**shape, **world_extra, seed=seed))
     return world, RCCConfig(**shape, hidden_dim=hidden_dim, seed=seed, **rcc_only)
 
 
@@ -184,8 +244,36 @@ def embeddings(world: World) -> dict[str, Tensor]:
     }
 
 
+def save_world(world: World, path: str | Path) -> None:
+    """Write what makes this world the world it is: its config and its embeddings.
+
+    Everything else a world does is derived from those two, so this plus
+    :meth:`rcc.RCC.load` reproduces a run without either side having been seeded.
+    """
+    np.savez(str(path), keys=world.keys, queries=world.queries,
+             cfg=json.dumps(asdict(world.cfg)))
+
+
+def load_world(path: str | Path) -> World:
+    """Rebuild a world that :func:`save_world` wrote."""
+    saved = np.load(str(path))
+    keys, queries = saved["keys"], saved["queries"]
+    return World(CogGridConfig(**json.loads(str(saved["cfg"].item()))),
+                 embeddings=lambda cfg, rng: (keys, queries))
+
+
+def resolve_device(name: str | None = None) -> torch.device:
+    """The device to run on. ``None`` takes cuda when it is available.
+
+    Chains are built on the CPU and moved, so that :func:`rcc._helpers.seeded`
+    reproduces an initialization whichever device the run ends up on.
+    """
+    return torch.device(name or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+
 def draw(
-    world: World, n_episodes: int, *, split: Split = "train", rng: Any = None
+    world: World, n_episodes: int, *, split: Split = "train", rng: Any = None,
+    device: torch.device | str | None = None,
 ) -> Batch:
     """Sample episodes and run the ideal observers over them.
 
@@ -198,10 +286,10 @@ def draw(
     traces = run_observers(batch)
 
     def as_float(array: Any) -> Tensor:
-        return torch.as_tensor(array, dtype=torch.float32)
+        return torch.as_tensor(array, dtype=torch.float32, device=device)
 
     def as_long(array: Any) -> Tensor:
-        return torch.as_tensor(array, dtype=torch.long)
+        return torch.as_tensor(array, dtype=torch.long, device=device)
 
     return Batch(
         observations=as_float(batch.observations),
@@ -239,15 +327,17 @@ def evaluate(chain: RCC, batch: Batch) -> dict[str, float]:
     }
 
 
-def random_preferences(cfg: RCCConfig, seed: int = 0) -> Tensor:
+def random_preferences(cfg: RCCConfig, seed: int | None = None, *,
+    device: torch.device | str | None = None) -> Tensor:
     """Which observation channels the chain wants to see on, as a 0/1 vector.
 
-    Pinned by default, and by a generator of its own: stage 4's figure is about a
-    policy finding the best joint realization, which only means something against a
-    fixed set of preferences.
+    Unseeded like everything else, and drawn from a generator of its own so that
+    passing a ``seed`` pins the preferences without pinning anything upstream. They
+    are drawn once per run either way, which is what stage 4's figure needs.
     """
-    generator = torch.Generator().manual_seed(seed)
-    return (torch.rand(cfg.n_observations, generator=generator) > 0.5).float()
+    generator = None if seed is None else torch.Generator().manual_seed(seed)
+    drawn = (torch.rand(cfg.n_observations, generator=generator) > 0.5).float()
+    return drawn.to(device)
 
 
 def value_landscape(rates: Tensor, preferences: Tensor) -> Tensor:

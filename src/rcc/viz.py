@@ -108,16 +108,27 @@ def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
     return fig
 
 # --------------------------------------------------------------------- training
-_SERIES_STYLES = (("ideal", IDEAL, "--"), ("chance", MUTED, ":"),
-    ("naive", MUTED, "-."), ("held", CHAIN, "--"))
+#: Handed out in order to series the caller did not style. Nothing here inspects a
+#: label's text: what a series is called is the caller's business, and a plot that
+#: guessed from the name would change silently when the caller renamed one.
+_PALETTE = ((CHAIN, "-"), (IDEAL, "--"), (MUTED, ":"), (TRUTH, "-."))
 
-def _series_style(name: str) -> tuple[str, str]:
-    """Label substring --> (colour, linestyle). First match wins."""
-    lowered = name.lower()
-    for token, colour, dash in _SERIES_STYLES:
-        if token in lowered:
-            return colour, dash
-    return CHAIN, "-"
+def _styles_for(labels: Sequence[str],
+    styles: Mapping[str, tuple[str, str]] | None) -> dict[str, tuple[str, str]]:
+    """label --> (colour, linestyle), the caller's where given, _PALETTE for the rest.
+    >>> _styles_for(["a", "b"], {"a": ("#000000", ":")})
+    {'a': ('#000000', ':'), 'b': ('#7b52ab', '-')}
+    """
+    given = styles or {}
+    resolved: dict[str, tuple[str, str]] = {}
+    unstyled = 0
+    for label in labels:
+        if label in given:
+            resolved[label] = given[label]
+        else:
+            resolved[label] = _PALETTE[unstyled % len(_PALETTE)]
+            unstyled += 1
+    return resolved
 
 def _smoothed(series: Sequence[float], smooth: int) -> np.ndarray:
     """Centred moving average of width smooth.
@@ -130,22 +141,25 @@ def _smoothed(series: Sequence[float], smooth: int) -> np.ndarray:
     return values
 
 def plot_training(history: Mapping[str, Sequence[float]], *, smooth: int = 1,
+    styles: Mapping[str, tuple[str, str]] | None = None,
     ylabel: str = "goal accuracy", fig: Figure | None = None,
     figsize=(6.5, 4.0)) -> Figure:
     """Plot every series in history against training iteration.
     history: label --> one value per iteration, or fewer measured at an even cadence
     smooth: width of a centred moving average, 1 disabling it
+    styles: label --> (colour, linestyle); the rest are handed _PALETTE in order
     returns: Figure
     """
     fig = fig or plt.figure(figsize=figsize)
     ax = fig.add_subplot(111)
+    resolved = _styles_for(list(history), styles)
     iterations = max(len(series) for series in history.values())
     for name, series in history.items():
         # Only a per-iteration series is noisy enough to want smoothing, and only it
         # is indexed by iteration; one measured periodically is spread evenly across
         # the run rather than crushed against the left edge.
         values = _smoothed(series, smooth if len(series) == iterations else 1)
-        colour, dash = _series_style(name)
+        colour, dash = resolved[name]
         ax.plot(np.linspace(0, iterations - 1, len(values)), values, label=name,
             linewidth=1.6, color=colour, linestyle=dash)
 
@@ -180,14 +194,16 @@ def plot_losses(losses: Mapping[str, Sequence[float]], *, smooth: int = 1,
 
 # --------------------------------------------------------------- generalization
 def plot_generalization(scores: Mapping[str, Mapping[str, float]], *,
-    chance: float | None = None, fig: Figure | None = None,
-    figsize=(6.5, 4.0)) -> Figure:
+    chance: float | None = None, styles: Mapping[str, tuple[str, str]] | None = None,
+    fig: Figure | None = None, figsize=(6.5, 4.0)) -> Figure:
     """Bar per observer, group per split of the variable pool.
     scores: split --> observer label --> accuracy in [0, 1]
     chance: drawn across the panel when given
+    styles: label --> (colour, linestyle); the rest are handed _PALETTE in order
     returns: Figure
     """
     splits, labels = list(scores), list(next(iter(scores.values())))
+    resolved = _styles_for(labels, styles)
     group = np.arange(len(splits))
     width = 0.8 / len(labels)
 
@@ -195,7 +211,7 @@ def plot_generalization(scores: Mapping[str, Mapping[str, float]], *,
     ax = fig.add_subplot(111)
     for offset, label in enumerate(labels):
         ax.bar(group + offset * width, [scores[split][label] for split in splits],
-            width, label=label, color=_series_style(label)[0])
+            width, label=label, color=resolved[label][0])
     if chance is not None:
         ax.axhline(chance, color=MUTED, linestyle=":", linewidth=1.2, label="chance")
 

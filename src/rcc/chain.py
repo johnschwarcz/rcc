@@ -1,5 +1,7 @@
 """The four stages, assembled. Each is a plain ``nn.Module``, importable alone."""
 from collections.abc import Iterator
+from dataclasses import asdict
+from pathlib import Path
 import torch
 from torch import Tensor, nn
 from .classifier import BeliefClassifier
@@ -46,6 +48,39 @@ class RCC(nn.Module):
             goal_correct=goal_correct,
             generator=generator,)
         return self.generator(ctx_vals, confidence, interaction.score)
+
+    @property
+    def device(self) -> torch.device:
+        """Where the chain's parameters actually are, which is worth checking against
+        where you meant to put them.
+        >>> RCC(RCCConfig(n_vars=8, hidden_dim=16, seed=0)).device
+        device(type='cpu')
+        """
+        return next(self.parameters()).device
+
+    # ------------------------------------------------------- saving and loading
+    def save(self, path: str | Path) -> None:
+        """Write the config beside the parameters, so ``load`` needs nothing else.
+        Reproducing a run by reloading it beats reproducing it by seeding: the seed
+        only reproduces a chain if every version between then and now agrees.
+        """
+        torch.save({"cfg": asdict(self.cfg), "state": self.state_dict()}, path)
+
+    @classmethod
+    def load(cls, path: str | Path, map_location: str | None = None) -> "RCC":
+        """Rebuild a chain that :meth:`save` wrote, fixed embeddings included.
+        Those are buffers, so they come back with the rest of the state rather than
+        having to be supplied again.
+        """
+        saved = torch.load(path, map_location=map_location, weights_only=True)
+        cfg = RCCConfig(**saved["cfg"])
+        placeholder = {}
+        if not cfg.learn_embeddings:
+            shape = (cfg.n_vars, cfg.n_observations, cfg.embedding_dim)
+            placeholder = {"keys": torch.zeros(shape), "queries": torch.zeros(shape)}
+        chain = cls(cfg, **placeholder)
+        chain.load_state_dict(saved["state"])
+        return chain
 
     # ------------------------------------------------------ parameter groups
     def estimation_parameters(self) -> Iterator[nn.Parameter]:

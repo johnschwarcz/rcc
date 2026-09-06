@@ -10,6 +10,7 @@ examples need a real environment to run against, which is what it is for.
 
 import argparse
 import json
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -265,10 +266,34 @@ def load_world(path: str | Path) -> World:
 def resolve_device(name: str | None = None) -> torch.device:
     """The device to run on. ``None`` takes cuda when it is available.
 
+    An explicit request is honoured only if the machine can serve it. A script
+    may pin ``cuda:0`` for the machine its figures were made on and still run
+    anywhere: without a cuda build we fall back to the cpu, and an index past
+    the last visible gpu falls back to the first one. Both say so, because a
+    run that quietly lands on the cpu is a run that looks hung.
+
     Chains are built on the CPU and moved, so that :func:`rcc._helpers.seeded`
     reproduces an initialization whichever device the run ends up on.
     """
-    return torch.device(name or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if name is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(name)
+    if device.type != "cuda":
+        return device
+    if not torch.cuda.is_available():
+        warnings.warn(
+            f"{name} was asked for, but no cuda device is available here; "
+            f"falling back to the cpu.", RuntimeWarning, stacklevel=2,
+        )
+        return torch.device("cpu")
+    visible = torch.cuda.device_count()
+    if device.index is not None and device.index >= visible:
+        warnings.warn(
+            f"{name} was asked for, but only {visible} cuda device(s) are "
+            f"visible; falling back to cuda:0.", RuntimeWarning, stacklevel=2,
+        )
+        return torch.device("cuda", 0)
+    return device
 
 
 def draw(

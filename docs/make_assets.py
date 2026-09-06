@@ -72,20 +72,23 @@ if __name__ == "__main__":
         seed=seed,
         classifier_lr=1e-4, 
         generator_lr=1e-4, 
-        classifier_entropy_bonus=0.01,
+        classifier_entropy_bonus=0.1,
         control_iterations=2000,  
         control_lr=5e-3, 
         controller_entropy_bonus=0.05,
-        device=None,
-        micro_batch= 1000, # or None
+        device='cuda:0', # or None
+        micro_batch= 5000, # or None
         evaluate_every=250,
-        eval_episodes=2000, # batch size for evaluation
+        eval_episodes=5000, # batch size for evaluation
     )
     out = args.out or ROOT / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
 
     world, cfg = world_and_config(args)
     device = resolve_device(args.device)
+    # Before the batches, not after: a run that has silently landed on the cpu
+    # is a run that looks hung, and these figures take a gpu to produce.
+    print(f"device: asked for {args.device or 'auto'}, running on {device}")
     evaluation = {"train": draw(world, args.eval_episodes, split=TRAIN, rng=args.seed, device=device), "test": draw(world, args.eval_episodes, split=HELD_OUT, rng=args.seed, device=device)}
     chain = RCC(cfg, **({} if cfg.learn_embeddings else embeddings(world))).to(device)    
     trainer = Trainer(chain, classifier_lr=args.classifier_lr, generator_lr=args.generator_lr, control_lr=args.control_lr, 

@@ -2,8 +2,8 @@ import torch
 from torch import Tensor
 from ._helpers import require_shape
 
-__all__ = ["controller_loss", "embedding_norm_penalty", "kl_divergence",
-    "prediction_loss", "reward_loss", "soft_clip", "supervised_loss", "symmetric_kl"]
+__all__ = ["controller_loss", "embedding_norm_penalty", "kl_divergence", "prediction_loss",
+    "reward_loss", "soft_clip", "supervised_loss", "symmetric_kl"]
 
 def soft_clip(x: Tensor, eps: float = 1e-3) -> Tensor:
     """Softly squash x into [eps, 1 - eps] without zeroing the gradient."""
@@ -24,25 +24,21 @@ def symmetric_kl(x: Tensor, y: Tensor, *, bernoulli: bool = True, eps: float = 1
         backward = backward + kl_divergence(1 - y, 1 - x, eps)
     return (forward + backward) / 2
 
-def supervised_loss(belief: Tensor, target: Tensor, *,
-    eps: float = 1e-8, root: bool = True) -> Tensor:
+def supervised_loss(belief: Tensor, target: Tensor, *, eps: float = 1e-8, root: bool = True) -> Tensor:
     require_shape("target", target, belief.shape)
     divergence = symmetric_kl(belief, target, bernoulli=False)
     shifted = divergence - divergence.detach().min() + eps
     shifted = shifted.sqrt() if root else shifted
     return shifted.mean()
 
-def reward_loss(goal_belief: Tensor, selection: Tensor, correct: Tensor, *,
-    entropy_bonus: float = 0.1) -> Tensor:
+def reward_loss(goal_belief: Tensor, selection: Tensor, correct: Tensor, *, entropy_bonus: float = 0.1) -> Tensor:
     """
+    The final step outcome provides a gradient to every step
     goal_belief: (n_episodes, n_steps, n_realizations)
     selection, correct: (n_episodes,)
-    the final verdict evaluated at the final step is applied at every step
     returns: scalar
     """
-    if goal_belief.ndim != 3:
-        raise ValueError("goal_belief must have shape (n_episodes, n_steps, "
-            f"n_realizations), got {tuple(goal_belief.shape)}")
+    require_shape("goal_belief", goal_belief, (None, None, None))
     n_episodes, n_steps, _ = goal_belief.shape
     require_shape("selection", selection, (n_episodes,))
     require_shape("correct", correct, (n_episodes,))
@@ -56,12 +52,11 @@ def reward_loss(goal_belief: Tensor, selection: Tensor, correct: Tensor, *,
     return (reward + punishment - entropy).mean()
 
 def prediction_loss(predicted_rates: Tensor, observed_rates: Tensor, *,
-    correct: Tensor | None = None, chance: float = 0.0) -> Tensor:
+        correct: Tensor | None = None, chance: float = 0.0) -> Tensor:
     """Score the generator against the experienced observations.
-    predicted_rates, observed_rates: (n_episodes, n_observations);
-    observed is normally observations.mean(1)
-    correct: (n_episodes,), biases loss to episodes with correct actions
-    chance: weight on the unconditional term, so 0 is correct episodes only
+    predicted_rates, observed_rates: (n_episodes, n_observations); Typically averaged over time.
+    correct: (n_episodes,), biases loss towards rewarded episodes
+    chance: weight towards treating all episodes equal
     returns: scalar
     """
     require_shape("observed_rates", observed_rates, predicted_rates.shape)
@@ -82,8 +77,8 @@ def embedding_norm_penalty(keys: Tensor, queries: Tensor) -> Tensor:
     off_sphere = (keys.norm(dim=-1) - 1) ** 2 + (queries.norm(dim=-1) - 1) ** 2
     return off_sphere.mean()
 
-def controller_loss(value: Tensor, predicted_value: Tensor, log_prob: Tensor,
-    entropy: Tensor, *, entropy_bonus: float = 0.05) -> Tensor:
+def controller_loss(value: Tensor, predicted_value: Tensor, log_prob: Tensor, entropy: Tensor, *,
+        entropy_bonus: float = 0.05) -> Tensor:
     """Advantage actor-critic for stage 4."""
     advantage = value - predicted_value
     policy_gradient = (-log_prob * advantage.detach()).mean()

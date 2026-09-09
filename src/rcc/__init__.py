@@ -41,6 +41,9 @@ Layout
 ``chain``         :class:`RCC`, which holds all four.
 ``training``      :class:`Trainer` — those objectives, each with its own
                   optimizer, and the order they are stepped in.
+``checkpoint``    :func:`save_run` and :func:`load_run` — a finished run on disk,
+                  the chain and its optimizers beside what the loop measured, so
+                  re-plotting never means retraining.
 ``viz``           Plotting. Every function returns a figure; none call ``show()``.
 
 Names follow `coggrid <https://github.com/johnschwarcz/coggrid>`_, the
@@ -51,8 +54,10 @@ rather than reinvented. *Realization* stays the word for what a ``ctx_vals``
 holds, exactly as coggrid pairs the field with ``n_realizations``.
 """
 
+from ._helpers import resolve_device, sample_categorical
 from .chain import RCC
-from .classifier import BeliefClassifier, goal_accuracy, sample_goal, select_goal
+from .checkpoint import Run, load_run, save_run
+from .classifier import BeliefClassifier, goal_accuracy, select_goal
 from .config import RCCConfig
 from .controller import Controller, intrinsic_value
 from .generator import ObservationGenerator, query_from_belief
@@ -81,7 +86,7 @@ __all__ = [
     # stage 2 — classification
     "BeliefClassifier",
     "select_goal",
-    "sample_goal",
+    "sample_categorical",
     "goal_accuracy",
     # stage 3 — generation
     "ObservationGenerator",
@@ -99,4 +104,9 @@ __all__ = [
     "Trainer",
     "TrainingStep",
     "ControlStep",
+    # where a run happens, and how one is kept
+    "resolve_device",
+    "save_run",
+    "load_run",
+    "Run",
 ]

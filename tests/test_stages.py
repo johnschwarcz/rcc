@@ -16,7 +16,7 @@ from rcc import (
     intrinsic_value,
     ordered_pairs,
     query_from_belief,
-    sample_goal,
+    sample_categorical,
     select_goal,
 )
 
@@ -188,10 +188,10 @@ def test_select_goal_rejects_a_mismatched_index():
         select_goal(belief, torch.zeros(N_EPISODES + 1, dtype=torch.long))
 
 
-def test_sample_goal_is_reproducible_given_a_generator():
+def test_sample_categorical_is_reproducible_given_a_generator():
     goal_belief = torch.softmax(torch.randn(N_EPISODES, N_STEPS, 4), -1)
     draws = [
-        sample_goal(goal_belief, torch.Generator().manual_seed(0)) for _ in range(2)
+        sample_categorical(goal_belief, torch.Generator().manual_seed(0)) for _ in range(2)
     ]
     assert torch.equal(*draws)
 
@@ -229,13 +229,13 @@ def test_generator_rejects_a_mismatched_confidence(interactions):
 
 def test_query_needs_a_single_time_slice():
     belief = torch.rand(N_EPISODES, N_STEPS, CFG.n_contexts, CFG.n_realizations)
-    with pytest.raises(ValueError, match=r"\(n_episodes, n_contexts, n_realizations\)"):
+    with pytest.raises(ValueError, match=r"belief must have shape \(n, n, n\)"):
         query_from_belief(belief, torch.zeros(N_EPISODES, dtype=torch.long))
 
 
 def test_teaching_signal_is_all_or_nothing():
     belief = torch.softmax(torch.randn(N_EPISODES, CFG.n_contexts, 4), -1)
-    with pytest.raises(ValueError, match="go together"):
+    with pytest.raises(ValueError, match="both or neither"):
         query_from_belief(
             belief,
             torch.zeros(N_EPISODES, dtype=torch.long),
@@ -340,5 +340,5 @@ def test_intrinsic_value_punishes_any_single_miss():
 
 
 def test_intrinsic_value_rejects_a_mismatched_preference_vector():
-    with pytest.raises(ValueError, match="preferences must cover"):
+    with pytest.raises(ValueError, match="preferences must have shape"):
         intrinsic_value(torch.rand(2, 3), torch.rand(4))

@@ -112,14 +112,28 @@ by side.
 | `embedding_dim` | `30` | Dimensionality of the key/query embeddings that are contracted into interactions. |
 | `hidden_dim` | `1000` | Width of every hidden layer, and of the recurrent state. |
 | `learn_embeddings` | `True` | Whether stage 1's embeddings are learned. `False` requires you to supply them, which isolates the classifier by handing it a perfect representation. |
-| `seed` | `None` | Seed for parameter initialization. `None` means non-reproducible. Seeding restores the global RNG afterwards, so it will not disturb your own stream. |
+| `seed` | `None` | Seed for parameter initialization, and for the sampling a `Trainer` does. `None` means non-reproducible. Seeding restores the global RNG afterwards, so it will not disturb your own stream. |
+| `device` | `None` | Where the chain runs. `None` stays on the cpu, `'auto'` takes cuda when it is available, and an explicit `'cuda:0'` is honoured if the machine can serve it and warned about if it cannot. The chain places itself. |
+| `classifier_lr` | `0.001` | Adam learning rate for the inference objective, which is stage 2. |
+| `generator_lr` | `None` | Adam learning rate for the estimation objective, which is stages 1 and 3 together. `None` follows `classifier_lr`; `estimation_lr` resolves it. |
+| `control_lr` | `0.003` | Adam learning rate for the control objective, which is stage 4. |
+| `classifier_entropy_bonus` | `0.1` | `reward_loss`'s entropy bonus. |
+| `controller_entropy_bonus` | `0.05` | `controller_loss`'s entropy bonus; constant, never decayed. |
+| `micro_batch` | `None` | Split each batch into slices of this many episodes, accumulating their gradients before one optimizer step, so peak memory follows the slice rather than the batch. A memory knob, not a statistical one. `None` runs the batch in one pass. |
+
+The fields above the line describe what a chain *is*; the ones below it describe
+what happens when a `Trainer` steps it. Both live in one config so that a script
+states the run once: `RCC(cfg)` reads the architecture and places itself on
+`device`, and `Trainer(chain)` reads the rest off `chain.cfg`. Every training
+field is still a keyword argument on `Trainer` for sweeping one value across
+chains that otherwise agree.
 
 Two of coggrid's fields are deliberately absent. `n_steps` and `n_episodes` are
 read from the shape of the tensor each module is handed, so storing them would
 create a second source of truth that could disagree with the data.
 
 Derived properties: `n_interactions`, `realization_shape`,
-`n_joint_realizations`, `classifier_input_dim`.
+`n_joint_realizations`, `classifier_input_dim`, `estimation_lr`.
 
 ## Objectives
 
@@ -265,10 +279,27 @@ python examples/quickstart.py    # every stage trained, in as few lines as it go
 python docs/make_assets.py       # the same run, instrumented, with every figure
 ```
 
-`quickstart.py` prints nothing and plots nothing on purpose: it is the shortest path
-from a world to a trained chain, so it reads as the API. `make_assets.py` is that run
-with the losses recorded, the generalization table printed, and the figures below
-written out.
+`quickstart.py` plots nothing on purpose: it is the shortest path from a world to a
+trained chain, so it reads as the API. It reports train, held-out and controller
+performance as it goes, and saves the finished run to `runs/quickstart.pt`.
+`make_assets.py` is the same
+script with the instrumentation added and nothing else — the same config, the same two
+loops, the same `RCC(cfg)` and `Trainer(chain)` — plus the losses recorded, the
+generalization table printed, and the figures below written out.
+
+It also saves the finished run, so redrawing a figure never means retraining:
+
+```bash
+python docs/make_assets.py                 # trains, plots, and saves the run
+python docs/make_assets.py --replot        # redraws every figure, trains nothing
+```
+
+The checkpoint holds the chain, its optimizers, and the numbers the figures were
+drawn from — accuracy and both losses at every iteration, the last batch's belief —
+because none of those survive in the parameters. `--replot` reproduces the figures
+byte for byte, including on a machine without the gpu the run was trained on. It is
+written to `runs/make_assets.pt` unless `--checkpoint PATH` says otherwise, and is
+large: a full run is roughly 330 MB, which is why `runs/` is gitignored.
 
 Every task and architecture parameter is a flag, so reshaping a run never means
 editing a file. `--help` lists them all:
@@ -283,10 +314,15 @@ Task flags (`--n-vars`, `--n-contexts`, `--n-realizations`, `--n-observations`,
 describing the same task. `--n-steps` goes to the world alone — the chain reads the
 step count off the tensor it is handed. `--hidden-dim` and `--learn-embeddings` are the
 chain's alone. Run controls are `--out DIR` to save figures instead of showing them,
-`--iterations N`, `--batch-size N`, `--classifier-lr X`, `--generator-lr X` and
-`--seed N`; without a seed each run
+`--iterations N`, `--batch-size N`, `--classifier-lr X`, `--generator-lr X`,
+`--device DEVICE`, `--micro-batch N` and `--seed N`; without a seed each run
 explores fresh randomness. `docs/make_assets.py` takes the same flags, plus
-`--control-iterations N` and `--control-lr X` for the stage 4 run it does.
+`--control-iterations N` and `--control-lr X` for the stage 4 run it does, and
+`--checkpoint PATH` / `--replot` for the saved run described above.
+
+Everything that describes the chain or how it is trained ends up in `RCCConfig`,
+so neither script places a chain on a device or hands a `Trainer` a learning rate:
+`RCC(cfg)` and `Trainer(chain)` read it all from the one config.
 
 To change a default rather than pass it every time, pin it where the script parses
 its arguments — `args = arguments(n_realizations=8)` — and the command line still
@@ -318,6 +354,7 @@ pip install -e ".[dev]"
 pytest -q
 ruff check src tests examples docs conftest.py
 python docs/make_assets.py    # regenerate the README figures
+python docs/make_assets.py --replot   # redraw them from the last saved run
 ```
 
 The test suite covers three things. `tests/test_reference.py` transcribes the

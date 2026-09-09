@@ -21,8 +21,8 @@ def _numpy(x) -> np.ndarray:
     return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
 
 # ---------------------------------------------------------------------- stage 2
-def plot_belief_accumulation(belief, goal_ind, goal_value, posterior=None,
-    episode: int = 0, *, fig: Figure | None = None, figsize=(9.5, 3.6)) -> Figure:
+def plot_belief_accumulation(belief, goal_ind, goal_value, posterior=None, episode: int = 0, *,
+        fig: Figure | None = None, figsize=(9.5, 3.6)) -> Figure:
     """Draw one episode's belief filling in, step by step.
     belief, posterior: (n_episodes, n_steps, n_contexts, n_realizations)
     goal_ind, goal_value: (n_episodes,); posterior is optional, drawn alongside
@@ -70,7 +70,7 @@ def _goal_belief(belief, goal_ind) -> np.ndarray:
     return belief[np.arange(belief.shape[0]), :, goal_ind]
 
 def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
-    fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
+        fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
     """Compare the chain with the exact observer across a whole batch.
     belief, posterior: (n_episodes, n_steps, n_contexts, n_realizations)
     goal_ind, goal_value: (n_episodes,); posterior is optional
@@ -113,8 +113,7 @@ def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
 #: guessed from the name would change silently when the caller renamed one.
 _PALETTE = ((CHAIN, "-"), (IDEAL, "--"), (MUTED, ":"), (TRUTH, "-."))
 
-def _styles_for(labels: Sequence[str],
-    styles: Mapping[str, tuple[str, str]] | None) -> dict[str, tuple[str, str]]:
+def _styles_for(labels: Sequence[str], styles: Mapping[str, tuple[str, str]] | None) -> dict[str, tuple[str, str]]:
     """label --> (colour, linestyle), the caller's where given, _PALETTE for the rest.
     >>> _styles_for(["a", "b"], {"a": ("#000000", ":")})
     {'a': ('#000000', ':'), 'b': ('#7b52ab', '-')}
@@ -140,10 +139,9 @@ def _smoothed(series: Sequence[float], smooth: int) -> np.ndarray:
         values = np.convolve(values, np.ones(smooth) / smooth, mode="valid")
     return values
 
-def plot_training(history: Mapping[str, Sequence[float]], *, smooth: int = 1,
-    styles: Mapping[str, tuple[str, str]] | None = None,
-    ylabel: str = "goal accuracy", fig: Figure | None = None,
-    figsize=(6.5, 4.0)) -> Figure:
+def plot_training(history: Mapping[str, Sequence[float]], *, smooth: int = 1, ylabel: str = "goal accuracy",
+        styles: Mapping[str, tuple[str, str]] | None = None, fig: Figure | None = None,
+        figsize=(6.5, 4.0)) -> Figure:
     """Plot every series in history against training iteration.
     history: label --> one value per iteration, or fewer measured at an even cadence
     smooth: width of a centred moving average, 1 disabling it
@@ -171,7 +169,7 @@ def plot_training(history: Mapping[str, Sequence[float]], *, smooth: int = 1,
     return fig
 
 def plot_losses(losses: Mapping[str, Sequence[float]], *, smooth: int = 1,
-    fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
+        fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
     """Plot one objective per panel against training iteration.
     losses: label --> one value per iteration
     smooth: width of a centred moving average, 1 disabling it
@@ -193,9 +191,9 @@ def plot_losses(losses: Mapping[str, Sequence[float]], *, smooth: int = 1,
     return fig
 
 # --------------------------------------------------------------- generalization
-def plot_generalization(scores: Mapping[str, Mapping[str, float]], *,
-    chance: float | None = None, styles: Mapping[str, tuple[str, str]] | None = None,
-    fig: Figure | None = None, figsize=(6.5, 4.0)) -> Figure:
+def plot_generalization(scores: Mapping[str, Mapping[str, float]], *, chance: float | None = None,
+        styles: Mapping[str, tuple[str, str]] | None = None, fig: Figure | None = None,
+        figsize=(6.5, 4.0)) -> Figure:
     """Bar per observer, group per split of the variable pool.
     scores: split --> observer label --> accuracy in [0, 1]
     chance: drawn across the panel when given
@@ -225,8 +223,7 @@ def plot_generalization(scores: Mapping[str, Mapping[str, float]], *,
     return fig
 
 # ---------------------------------------------------------------------- stage 4
-def plot_policy(policy, landscape=None, episode: int = 0, *,
-    fig: Figure | None = None, figsize=(7.0, 3.4)) -> Figure:
+def plot_policy(policy, landscape=None, episode: int = 0, *, fig: Figure | None = None, figsize=(7.0, 3.4)) -> Figure:
     """Compare the controller's policy with the value it was chasing.
     policy, landscape: (n_episodes, n_realizations, n_realizations), so only
     n_contexts == 2, where the joint realization grid is a plane.

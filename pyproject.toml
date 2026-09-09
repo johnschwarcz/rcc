@@ -36,6 +36,10 @@ viz = ["matplotlib>=3.7", "numpy>=1.24"]
 dev = [
   "rcc[viz]",
   "coggrid @ git+https://github.com/johnschwarcz/coggrid",
+  "tqdm>=4.66",
+  # tqdm.auto draws a real widget in a notebook or an interactive console, and
+  # falls back to a warning and plain text without this.
+  "ipywidgets>=8.1",
   "pytest>=7.4",
   "ruff>=0.5",
   "mypy>=1.8",
@@ -60,7 +64,7 @@ testpaths = ["tests", "src"]
 addopts = "--doctest-modules"
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]

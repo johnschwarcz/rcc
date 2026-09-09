@@ -7,9 +7,7 @@ from .config import RCCConfig
 __all__ = ["ObservationGenerator", "query_from_belief"]
 
 class ObservationGenerator(nn.Module):
-    """Predict each channel's Bernoulli rate from a proposed joint realization.
-    The realization and confidence are shared across channels; interactions are not.
-    """
+    """Predict each channel conditioned on a joint realization."""
 
     def __init__(self, cfg: RCCConfig) -> None:
         super().__init__()
@@ -45,22 +43,20 @@ class ObservationGenerator(nn.Module):
         n_episodes = ctx_vals.shape[0]
         require_shape("ctx_vals", ctx_vals, (n_episodes, cfg.n_contexts))
         require_shape("confidence", confidence, (n_episodes, cfg.n_contexts))
-        require_shape("interactions",interactions,
-            (n_episodes, cfg.n_observations, cfg.n_interactions),)
+        require_shape("interactions", interactions,
+            (n_episodes, cfg.n_observations, cfg.n_interactions))
 
-def query_from_belief(belief: Tensor, goal_ind: Tensor, *,
-    goal_selection: Tensor | None = None, goal_correct: Tensor | None = None,
-    generator: torch.Generator | None = None,) -> tuple[Tensor, Tensor]:
+def query_from_belief(belief: Tensor, goal_ind: Tensor, *, goal_selection: Tensor | None = None,
+        goal_correct: Tensor | None = None, generator: torch.Generator | None = None) -> tuple[Tensor, Tensor]:
     """Turn a belief into the realization/confidence pair the generator wants.
-    belief: (n_episodes, n_contexts, n_realizations) (normally final timestep belief)
+    belief: (n_episodes, n_contexts, n_realizations) (normally final timestep)
     goal_ind, goal_selection, goal_correct: (n_episodes,)
     returns: ctx_vals, confidence, each of shape (n_episodes, n_contexts)
     """
-    if belief.ndim != 3:
-        raise ValueError("belief must have shape (n_episodes, n_contexts, "
-            f"n_realizations). Got {tuple(belief.shape)}")
+
+    require_shape("belief", belief, (None, None, None))
     if (goal_selection is None) != (goal_correct is None):
-        raise ValueError("goal_selection and goal_correct go together: supply both or neither.")
+        raise ValueError("supply both or neither goal_selection & goal_correct.")
 
     ctx_vals = sample_categorical(belief, generator)
     confidence = belief.gather(-1, ctx_vals.unsqueeze(-1)).squeeze(-1)

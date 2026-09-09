@@ -10,13 +10,16 @@ examples need a real environment to run against, which is what it is for.
 
 import argparse
 import json
-import warnings
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 import numpy as np
 import torch
 from torch import Tensor
+from tqdm.auto import tqdm
+# Nothing here resolves a device any more: that moved into rcc, where a chain
+# places itself on cfg.device. Scripts pass chain.device to draw() and no more.
 from rcc import RCC, RCCConfig, intrinsic_value, select_goal
 
 try:
@@ -69,15 +72,17 @@ N_STEPS, HIDDEN_DIM = 20, 256
 #: Task fields that reach the world alone — coggrid has them, RCCConfig does not.
 _WORLD_EXTRA = ("n_steps", "n_held_out_vars", "likelihood_temp", "likelihood_freq")
 
-#: What :func:`arguments` collects that describes the task or the architecture.
-_SETTINGS = (*SHAPE, *_WORLD_EXTRA, "hidden_dim", "learn_embeddings", "seed")
-#: Everything else it collects — how long to run, how to weight each objective, and
-#: where to put the output. Every one of these is a knob worth sweeping.
-_RUN = ("out", "iterations", "batch_size", "device", "micro_batch",
-        "classifier_lr",
-        "generator_lr", "control_iterations", "control_lr",
-        "classifier_entropy_bonus", "controller_entropy_bonus",
-        "evaluate_every", "eval_episodes")
+#: What :func:`arguments` collects that ends up inside :class:`RCCConfig` — the
+#: task, the architecture, and how the chain is trained. All of it reaches the
+#: config, so ``RCC(cfg)`` and ``Trainer(chain)`` need nothing else spelled out.
+_SETTINGS = (*SHAPE, *_WORLD_EXTRA, "hidden_dim", "learn_embeddings", "seed",
+             "device", "micro_batch", "classifier_lr", "generator_lr", "control_lr",
+             "classifier_entropy_bonus", "controller_entropy_bonus")
+#: Everything else it collects — how many times to go round each loop, how often to
+#: measure, and where to put the output. These belong to the script's loops rather
+#: than to the chain, which is why they are the only things a script still reads.
+_RUN = ("out", "checkpoint", "replot", "progress", "iterations", "batch_size",
+        "control_iterations", "evaluate_every", "eval_episodes")
 
 
 def arguments(**defaults: Any) -> argparse.Namespace:
@@ -103,6 +108,20 @@ def arguments(**defaults: Any) -> argparse.Namespace:
 
     run = parser.add_argument_group("run")
     run.add_argument("--out", type=Path, default=None, help="save figures here")
+    run.add_argument(
+        "--checkpoint", type=Path, default=None,
+        help="write the finished run here — the chain, its optimizers, and what the "
+             "loop measured — so that re-plotting it never means retraining",
+    )
+    run.add_argument(
+        "--replot", action="store_true",
+        help="load --checkpoint and go straight to the figures, training nothing",
+    )
+    run.add_argument(
+        "--progress", action=argparse.BooleanOptionalAction, default=None,
+        help="show a progress bar; the default shows one on a terminal and logs "
+             "lines instead when the output is redirected",
+    )
     # Not --n-steps: that counts observations inside one episode, and "step" means
     # the latter everywhere in this repo, as "update" means a belief update.
     run.add_argument(
@@ -113,7 +132,8 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     )
     run.add_argument(
         "--device", default=None,
-        help="torch device; the default takes cuda when it is available",
+        help="torch device: 'auto' takes cuda when it is available, 'cuda:0' asks "
+             "for one and falls back with a warning, and the default stays on the cpu",
     )
     run.add_argument(
         "--micro-batch", type=int, default=None,
@@ -205,8 +225,8 @@ def describe(args: argparse.Namespace, cfg: RCCConfig) -> str:
 
 def world_and_config(
     args: argparse.Namespace | None = None, /, **overrides: Any
-) -> tuple[World, RCCConfig]:
-    """A coggrid world and a chain config that agree on every shared field.
+) -> tuple[World, RCCConfig, dict[str, Tensor]]:
+    """A coggrid world, a chain config agreeing with it, and ``RCC(cfg, **given)``.
 
     Pass the parsed ``args`` to take every setting from the command line, plus
     keyword ``overrides`` for what a caller fixes about itself — a test with no
@@ -215,6 +235,11 @@ def world_and_config(
     Names are routed by destination: anything in :data:`SHAPE` reaches *both*
     configs, because the environment and the chain have to be describing the same
     task; ``learn_embeddings`` is rcc's alone.
+
+    The third return is what the chain has to be *given* rather than told: the
+    world's embeddings when stage 1 is not learning its own, and ``{}`` when it is.
+    They stay out of the config because a config is the task's shape, hashable and
+    comparable and small enough to print, while these are one world's data.
     """
     if args is not None:
         overrides = {**{name: getattr(args, name) for name in _SETTINGS}, **overrides}
@@ -230,15 +255,20 @@ def world_and_config(
     if world_extra.get("n_held_out_vars") is None:
         world_extra["n_held_out_vars"] = max(2, shape["n_vars"] // 3)
     world = World(CogGridConfig(**shape, **world_extra, seed=seed))
-    return world, RCCConfig(**shape, hidden_dim=hidden_dim, seed=seed, **rcc_only)
+    cfg = RCCConfig(**shape, hidden_dim=hidden_dim, seed=seed, **rcc_only)
+    return world, cfg, embeddings(world, cfg)
 
 
-def embeddings(world: World) -> dict[str, Tensor]:
-    """The world's true embeddings, as ``RCC(cfg, **embeddings(world))``.
+def embeddings(world: World, cfg: RCCConfig | None = None) -> dict[str, Tensor]:
+    """The world's true embeddings, as ``RCC(cfg, **embeddings(world, cfg))``.
 
     Handing these over is what isolates stage 2: the representation stage 1 would
-    otherwise have to find is simply given.
+    otherwise have to find is simply given. Passing ``cfg`` makes the call safe
+    either way — a chain that learns its own embeddings must not be given any, so
+    it gets ``{}`` and the caller needs no conditional.
     """
+    if cfg is not None and cfg.learn_embeddings:
+        return {}
     return {
         "keys": torch.as_tensor(world.keys, dtype=torch.float32),
         "queries": torch.as_tensor(world.queries, dtype=torch.float32),
@@ -261,39 +291,6 @@ def load_world(path: str | Path) -> World:
     keys, queries = saved["keys"], saved["queries"]
     return World(CogGridConfig(**json.loads(str(saved["cfg"].item()))),
                  embeddings=lambda cfg, rng: (keys, queries))
-
-
-def resolve_device(name: str | None = None) -> torch.device:
-    """The device to run on. ``None`` takes cuda when it is available.
-
-    An explicit request is honoured only if the machine can serve it. A script
-    may pin ``cuda:0`` for the machine its figures were made on and still run
-    anywhere: without a cuda build we fall back to the cpu, and an index past
-    the last visible gpu falls back to the first one. Both say so, because a
-    run that quietly lands on the cpu is a run that looks hung.
-
-    Chains are built on the CPU and moved, so that :func:`rcc._helpers.seeded`
-    reproduces an initialization whichever device the run ends up on.
-    """
-    if name is None:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(name)
-    if device.type != "cuda":
-        return device
-    if not torch.cuda.is_available():
-        warnings.warn(
-            f"{name} was asked for, but no cuda device is available here; "
-            f"falling back to the cpu.", RuntimeWarning, stacklevel=2,
-        )
-        return torch.device("cpu")
-    visible = torch.cuda.device_count()
-    if device.index is not None and device.index >= visible:
-        warnings.warn(
-            f"{name} was asked for, but only {visible} cuda device(s) are "
-            f"visible; falling back to cuda:0.", RuntimeWarning, stacklevel=2,
-        )
-        return torch.device("cuda", 0)
-    return device
 
 
 def draw(
@@ -326,6 +323,36 @@ def draw(
         ideal=float(traces["joint"].accuracy[:, -1].mean()),
         naive=float(traces["naive"].accuracy[:, -1].mean()),
     )
+
+
+def _someone_is_watching() -> bool:
+    """Whether a bar would be seen. A terminal, or an interactive console.
+
+    An interactive console is the case tqdm's own guess gets wrong: it replaces
+    stderr with a stream that is not a tty, so asking the stream alone turns the
+    bar off in exactly the place a bar is most wanted.
+    """
+    if sys.stderr.isatty():
+        return True
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+    return get_ipython() is not None
+
+
+def progress(total: int, desc: str, enabled: bool | None = None) -> tqdm:
+    """A bar over one loop, whose postfix is where a script reports how it is doing.
+    ``enabled`` None asks :func:`_someone_is_watching`; redirected output gets no
+    bar, so a long run logs its own lines rather than a million redraws.
+    ``--progress`` and ``--no-progress`` say so outright when the guess is wrong.
+    """
+    if enabled is None:
+        enabled = _someone_is_watching()
+    return tqdm(range(total), desc=desc, disable=not enabled, dynamic_ncols=True,
+        leave=True,
+        bar_format="{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+                   "[{elapsed}<{remaining}]{postfix}")
 
 
 def accuracy(goal_belief: Tensor, goal_value: Tensor) -> float:

@@ -1,13 +1,9 @@
-"""Training — one optimizer per objective, and the order they are stepped in.
-Nothing here is task-specific: a batch of episodes arrives as tensors, and what an
-action turned out to be worth arrives as a table the caller has already scored.
-"""
-from typing import NamedTuple
+from typing import Any, NamedTuple
 import torch
 from torch import Tensor
-from ._helpers import require_shape
+from ._helpers import require_shape, sample_categorical
 from .chain import RCC
-from .classifier import goal_accuracy, sample_goal, select_goal
+from .classifier import goal_accuracy, select_goal
 from .losses import (
     controller_loss,
     embedding_norm_penalty,
@@ -17,6 +13,11 @@ from .losses import (
 
 __all__ = ["ControlStep", "Trainer", "TrainingStep"]
 
+def _or_config(override: Any, configured: Any) -> Any:
+    """The explicit argument when there is one, the config's field otherwise.
+    ``None`` is not a legal value for any of these, so it is free to mean "unset".
+    """
+    return configured if override is None else override
 class TrainingStep(NamedTuple):
     """One iteration of stages 1-3.
     Unpacks as classifier_loss, generator_loss, accuracy, belief.
@@ -27,74 +28,71 @@ class TrainingStep(NamedTuple):
     generator_loss: float
     accuracy: float
     belief: Tensor
-
 class ControlStep(NamedTuple):
     """One iteration of stage 4. Unpacks as loss, value.
     value: the mean worth of the actions actually taken
     """
     loss: float
     value: float
-
 class Trainer:
     """Each objective with its own optimizer over its own parameter group.
     ``step`` trains stages 1-3 from a single forward pass; ``control_step`` trains
-    stage 4, which shares no parameter with either. ``generator_lr`` covers stages
-    1 and 3 together and defaults to ``classifier_lr``.
-
-    Stage 2 is taught the paper's way: the chain commits to one answer for the goal
-    variable and is told only whether it was right.
-
-    ``micro_batch`` splits each batch into slices of that many episodes, accumulating
-    their gradients before one optimizer step, so peak memory follows the slice
-    rather than the batch. It is a memory knob and not a statistical one: the batch
-    is still what a step is computed over. See ``step`` for where it is exact.
-    >>> import torch
-    >>> from rcc import RCC, RCCConfig
-    >>> cfg = RCCConfig(n_vars=8, n_realizations=3, n_observations=2, hidden_dim=16, seed=0)
-    >>> trainer = Trainer(RCC(cfg))
-    >>> step = trainer.step(
-    ...     observations=torch.rand(4, 5, 2).round(),
-    ...     ctx_inds=torch.randint(0, cfg.n_vars, (4, cfg.n_contexts)),
-    ...     goal_ind=torch.zeros(4, dtype=torch.long),
-    ...     goal_value=torch.zeros(4, dtype=torch.long))
-    >>> 0.0 <= step.accuracy <= 1.0
-    True
+    stage 4, which shares no parameter with either.
     """
 
     def __init__(self, chain: RCC, *,
-        classifier_lr: float = 1e-3, generator_lr: float | None = None,
-        control_lr: float = 3e-3,
-        classifier_entropy_bonus: float = 0.1, micro_batch: int | None = None,
-        controller_entropy_bonus: float = 0.05,
-        generator: torch.Generator | None = None,) -> None:
+            classifier_lr: float | None = None, generator_lr: float | None = None, control_lr: float | None = None,
+            classifier_entropy_bonus: float | None = None, controller_entropy_bonus: float | None = None,
+            micro_batch: int | None = None, generator: torch.Generator | None = None) -> None:
+        cfg = chain.cfg
         self.chain = chain
-        self.generator = generator
-        self.classifier_entropy_bonus = classifier_entropy_bonus
-        self.micro_batch = micro_batch
-        self.controller_entropy_bonus = controller_entropy_bonus
-        # What a guess is worth when the belief is uninformative, which is the
-        # weight prediction_loss puts on its unconditional term. Not a free
-        # parameter: the task's chance rate defines it.
-        self.chance = 1 / chain.cfg.n_realizations
-        self.inference = torch.optim.Adam(chain.inference_parameters(), lr=classifier_lr)
-        self.estimation = torch.optim.Adam(chain.estimation_parameters(),
-            lr=classifier_lr if generator_lr is None else generator_lr)
-        self.control = torch.optim.Adam(chain.control_parameters(), lr=control_lr)
+        self.chance = 1 / cfg.n_realizations
+        self.classifier_entropy_bonus = _or_config(
+            classifier_entropy_bonus, cfg.classifier_entropy_bonus)
+        self.controller_entropy_bonus = _or_config(
+            controller_entropy_bonus, cfg.controller_entropy_bonus)
+        self.micro_batch = _or_config(micro_batch, cfg.micro_batch)
 
-    def step(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor,
-        goal_value: Tensor,) -> TrainingStep:
+        self.generator = generator
+        if generator is None and cfg.seed is not None:
+            self.generator = torch.Generator(device=chain.device).manual_seed(cfg.seed)
+
+        inference_lr = _or_config(classifier_lr, cfg.classifier_lr)
+        estimation_lr = _or_config(generator_lr, _or_config(cfg.generator_lr, inference_lr))
+        self.inference = torch.optim.Adam(chain.inference_parameters(), lr=inference_lr)
+        self.estimation = torch.optim.Adam(chain.estimation_parameters(), lr=estimation_lr)
+        self.control = torch.optim.Adam(chain.control_parameters(),
+            lr=_or_config(control_lr, cfg.control_lr))
+
+    # ------------------------------------------------------- saving and loading
+    def state_dict(self) -> dict[str, Any]:
+        """The three optimizers' state, so a run can be picked up where it stopped."""
+        return {"inference": self.inference.state_dict(),
+                "estimation": self.estimation.state_dict(),
+                "control": self.control.state_dict()}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore what :meth:`state_dict` wrote, onto the chain this Trainer holds."""
+        self.inference.load_state_dict(state["inference"])
+        self.estimation.load_state_dict(state["estimation"])
+        self.control.load_state_dict(state["control"])
+
+    # --------------------------------------------------------------- the steps
+    def _place(self, *tensors: Tensor) -> tuple[Tensor, ...]:
+        """The batch, on whatever device the chain is on."""
+        device = self.chain.device
+        return tuple(tensor.to(device) for tensor in tensors)
+
+    def step(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_value: Tensor) -> TrainingStep:
         """Step the inference and estimation objectives over one batch.
         observations: (n_episodes, n_steps, n_observations)
         ctx_inds: (n_episodes, n_contexts)
         goal_ind, goal_value: (n_episodes,)
         returns: TrainingStep, whose belief is detached
-
-        With ``micro_batch`` set this accumulates over slices. That is exact for every
-        objective that is a plain mean over episodes, which is ``reward_loss`` and the
-        norm penalty. ``prediction_loss`` is not: it normalizes by how many episodes in
-        the batch were correct, which then applies per slice, so a larger slice is
-        closer.
+        With ``micro_batch`` set this accumulates over slices. 
         """
+        observations, ctx_inds, goal_ind, goal_value = self._place(
+            observations, ctx_inds, goal_ind, goal_value)
         n_episodes = observations.shape[0]
         size = min(self.micro_batch or n_episodes, n_episodes)
 
@@ -117,8 +115,8 @@ class Trainer:
         return TrainingStep(classifier_total, generator_total, accuracy_total,
             torch.cat(beliefs))
 
-    def _accumulate(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor,
-        goal_value: Tensor, share: float) -> tuple[float, float, float, Tensor]:
+    def _accumulate(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_value: Tensor,
+            share: float) -> tuple[float, float, float, Tensor]:
         """One micro-batch, leaving its gradients accumulated on the parameters.
         share: this slice's fraction of the batch, which scales both losses so that
         what accumulates is the whole batch's gradient
@@ -130,7 +128,7 @@ class Trainer:
         # teaches stages 1 and 3, and under objective='reward' stage 2 as well.
         goal = select_goal(belief, goal_ind)
         with torch.no_grad():
-            selection = sample_goal(goal, self.generator)[:, -1]
+            selection = sample_categorical(goal, self.generator)[:, -1]
             correct = goal_accuracy(selection[:, None], goal_value)[:, 0]
 
         # Stage 2. No retain_graph: stage 2 reads the interactions detached, so this
@@ -159,6 +157,7 @@ class Trainer:
         landscape: (n_episodes, *realization_shape), what each joint action is worth
         returns: ControlStep
         """
+        ctx_inds, landscape = self._place(ctx_inds, landscape)
         n_episodes = ctx_inds.shape[0]
         require_shape("landscape", landscape,
             (n_episodes, *self.chain.cfg.realization_shape))

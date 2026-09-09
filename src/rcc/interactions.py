@@ -21,12 +21,6 @@ class Interaction(NamedTuple):
 def ordered_pairs(n_contexts: int) -> list[tuple[int, int]]:
     """Which (key, query) context pairs become interactions, in order.
     A single active variable has no pair, so it interacts with itself.
-    >>> ordered_pairs(1)
-    [(0, 0)]
-    >>> ordered_pairs(2)
-    [(0, 1), (1, 0)]
-    >>> ordered_pairs(3)
-    [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)]
     """
     pairs = [pair
         for i in range(n_contexts)
@@ -36,10 +30,8 @@ def ordered_pairs(n_contexts: int) -> list[tuple[int, int]]:
 
 class InteractionEncoder(nn.Module):
     """Active variables' embeddings --> pairwise scores.
-    learned keys, queries: (n_vars, n_observations, hidden_dim), projected down
-    to embedding_dim before they are contracted.
-    cfg.learn_embeddings = False --> supply keys, queries:
-    (n_vars, n_observations, embedding_dim)
+    learned keys, queries: (n_vars, n_observations, hidden_dim) are projected to embedding_dim.
+    cfg.learn_embeddings = False --> supply keys, queries: (n_vars, n_observations, embedding_dim)
     """
     # Declared so that a type checker knows these are tensors.
     keys: Tensor
@@ -47,8 +39,7 @@ class InteractionEncoder(nn.Module):
     key_index: Tensor
     query_index: Tensor
 
-    def __init__(self, cfg: RCCConfig, *,
-        keys: Tensor | None = None, queries: Tensor | None = None,) -> None:
+    def __init__(self, cfg: RCCConfig, *, keys: Tensor | None = None, queries: Tensor | None = None) -> None:
         super().__init__()
         self.cfg = cfg
         if cfg.learn_embeddings:
@@ -62,7 +53,7 @@ class InteractionEncoder(nn.Module):
                 self.query_proj = nn.Linear(cfg.hidden_dim, cfg.embedding_dim)
         else:
             if keys is None or queries is None:
-                raise ValueError("cfg.learn_embeddings is False, so keys/queries must be supplied.")
+                raise ValueError("keys/queries must be supplied when cfg.learn_embeddings is False.")
             expected = (cfg.n_vars, cfg.n_observations, cfg.embedding_dim)
             require_shape("keys", keys, expected)
             require_shape("queries", queries, expected)
@@ -78,9 +69,7 @@ class InteractionEncoder(nn.Module):
         ctx_inds: (n_episodes, n_contexts) of variable indices; (repeats allowed).
         returns: Interaction {score, keys, queries}
         """
-        if ctx_inds.ndim != 2 or ctx_inds.shape[1] != self.cfg.n_contexts:
-            raise ValueError(f"ctx_inds must have shape (n_episodes, "
-                f"{self.cfg.n_contexts}), got {tuple(ctx_inds.shape)}")
+        require_shape("ctx_inds", ctx_inds, (None, self.cfg.n_contexts))
 
         keys = self.keys[ctx_inds]
         queries = self.queries[ctx_inds]

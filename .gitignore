@@ -18,3 +18,6 @@ venv/
 # Editor. The interpreter path in here is Windows-specific, so it is local
 # configuration rather than something to hand to a contributor.
 .vscode/
+
+# Saved runs: a checkpoint is a build artifact, and a large one.
+runs/

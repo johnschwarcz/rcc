@@ -9,7 +9,7 @@ something broke rather than that a run was unlucky.
 """
 
 import torch
-from _common import accuracy, draw, embeddings, world_and_config
+from _common import accuracy, draw, world_and_config
 from rcc import (
     RCC,
     controller_loss,
@@ -23,14 +23,14 @@ from rcc import (
 
 def taught_chain(seed=0, **overrides):
     """A chain handed the world's true embeddings, so only stage 2 has to learn."""
-    world, cfg = world_and_config(seed=seed, learn_embeddings=False, **overrides)
-    return world, cfg, RCC(cfg, **embeddings(world))
+    world, cfg, given = world_and_config(seed=seed, learn_embeddings=False, **overrides)
+    return world, cfg, RCC(cfg, **given)
 
 
 def learning_chain(seed=0):
     """A chain that has to find the representation for itself."""
-    world, cfg = world_and_config(seed=seed, learn_embeddings=True)
-    return world, cfg, RCC(cfg)
+    world, cfg, given = world_and_config(seed=seed, learn_embeddings=True)
+    return world, cfg, RCC(cfg, **given)
 
 
 def goal_accuracy_of(belief, batch):

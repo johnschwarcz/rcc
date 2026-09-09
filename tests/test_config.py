@@ -48,3 +48,50 @@ def test_replace_leaves_the_original_alone():
     cfg = RCCConfig(n_contexts=2)
     assert cfg.replace(n_contexts=3).n_contexts == 3
     assert cfg.n_contexts == 2
+
+
+# --------------------------------------------------------------------------- #
+# the training fields
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("field", ["classifier_lr", "control_lr", "generator_lr"])
+@pytest.mark.parametrize("bad", [0, -1e-3, "3e-4", True])
+def test_rejects_rates_that_are_not_positive_floats(field, bad):
+    with pytest.raises(ValueError, match=field):
+        RCCConfig(**{field: bad})
+
+
+@pytest.mark.parametrize(
+    "field", ["classifier_entropy_bonus", "controller_entropy_bonus"]
+)
+def test_an_entropy_bonus_of_zero_is_allowed(field):
+    """Zero asks the objective for nothing but its own return, which is a choice."""
+    assert getattr(RCCConfig(**{field: 0.0}), field) == 0.0
+
+
+@pytest.mark.parametrize(
+    "field", ["classifier_entropy_bonus", "controller_entropy_bonus"]
+)
+def test_rejects_a_negative_entropy_bonus(field):
+    with pytest.raises(ValueError, match=field):
+        RCCConfig(**{field: -0.1})
+
+
+@pytest.mark.parametrize("bad", [0, -5, 2.5, True])
+def test_rejects_a_micro_batch_that_is_not_a_positive_int(bad):
+    with pytest.raises(ValueError, match="micro_batch"):
+        RCCConfig(micro_batch=bad)
+
+
+def test_micro_batch_of_none_means_one_pass():
+    assert RCCConfig().micro_batch is None
+
+
+def test_rejects_a_device_that_is_not_a_string():
+    with pytest.raises(ValueError, match="device"):
+        RCCConfig(device=0)
+
+
+def test_estimation_lr_follows_the_classifier_until_it_is_pinned():
+    assert RCCConfig(classifier_lr=1e-4).estimation_lr == 1e-4
+    assert RCCConfig(classifier_lr=1e-4, generator_lr=5e-4).estimation_lr == 5e-4
+

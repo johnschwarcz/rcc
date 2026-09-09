@@ -1,19 +1,13 @@
-"""Stage 4 — interactions to an action.
-An action is a full joint assignment, one realization per active variable, so the
-policy is a distribution over n_realizations ** n_contexts outcomes, shaped as a
-grid rather than a flat vector.
-"""
+# Stage 4 — interactions to an action from n_realizations ** n_contexts
 import torch
 from torch import Tensor, nn
-from ._helpers import sample_categorical, seeded
+from ._helpers import require_shape, sample_categorical, seeded
 from .config import RCCConfig
 
 __all__ = ["Controller", "intrinsic_value"]
 
 class Controller(nn.Module):
-    """An actor and a critic utilizing learned interactions.
-    cfg.n_joint_realizations sets the width of the actor's readout.
-    """
+    """An actor and a critic utilizing learned interactions."""
 
     def __init__(self, cfg: RCCConfig) -> None:
         super().__init__()
@@ -40,19 +34,14 @@ class Controller(nn.Module):
         interactions: (n_episodes, n_observations, n_interactions), detached here.
         returns: policy (n_episodes, *realization_shape), value (n_episodes,) 
         """
-        expected = (self.cfg.n_observations, self.cfg.n_interactions)
-        if interactions.ndim != 3 or tuple(interactions.shape[1:]) != expected:
-            raise ValueError(
-                f"interactions must have shape (n_episodes, {expected[0]}, "
-                f"{expected[1]}), got {tuple(interactions.shape)}")
+        require_shape("interactions", interactions,
+            (None, self.cfg.n_observations, self.cfg.n_interactions))
         flat = interactions.detach().reshape(interactions.shape[0], -1)
         policy = torch.softmax(self.actor(flat), -1)
         value = torch.sigmoid(self.critic(flat)).squeeze(-1)
         return policy.reshape(-1, *self.cfg.realization_shape), value
 
-    def act(
-        self, policy: Tensor, generator: torch.Generator | None = None
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    def act(self, policy: Tensor, generator: torch.Generator | None = None) -> tuple[Tensor, Tensor, Tensor]:
         """Sample a latent state of the world.
         policy: (n_episodes, *realization_shape)
         returns: actions (n_episodes, n_contexts), log_prob and entropy (n_episodes,)
@@ -65,7 +54,7 @@ class Controller(nn.Module):
         return self._unravel(chosen), log_prob, entropy
 
     def best(self, policy: Tensor) -> Tensor:
-        """The joint realization the policy likes most.
+        """The policy's argmax joint realization.
         policy: (n_episodes, *realization_shape)
         returns: (n_episodes, n_contexts) of realization indices
         """
@@ -78,20 +67,14 @@ class Controller(nn.Module):
 
 
 def intrinsic_value(rates: Tensor, preferences: Tensor, eps: float = 1e-6) -> Tensor:
-    """How well a set of observation rates matches what the chain wants to see.
-    The geometric mean over channels of rate where the channel is preferred and
-    1 - rate where it is not, so one badly-missed channel cannot be bought back.
+    """How well a set of observation rates matches the preferences.
     rates: (n_episodes, n_observations) in [0, 1]
     preferences: (n_observations,) or (n_episodes, n_observations)
     returns: (n_episodes,) in [0, 1]
     """
     if preferences.ndim == 1:
         preferences = preferences[None, :]
-    if preferences.shape[-1] != rates.shape[-1]:
-        raise ValueError(
-            f"preferences must cover {rates.shape[-1]} channels, got "
-            f"{preferences.shape[-1]}"
-        )
+    require_shape("preferences", preferences, (None, rates.shape[-1]))
     rates = rates.clamp(eps, 1 - eps)
     wanted = rates.log() * preferences
     unwanted = (1 - rates).log() * (1 - preferences)

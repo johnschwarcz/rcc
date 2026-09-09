@@ -15,7 +15,7 @@ from rcc import (
     intrinsic_value,
     prediction_loss,
     reward_loss,
-    sample_goal,
+    sample_categorical,
     select_goal,
     supervised_loss,
 )
@@ -68,7 +68,7 @@ def test_classification_error_never_reaches_the_embeddings(chain, inputs):
 def test_reward_error_never_reaches_the_embeddings_either(chain, inputs):
     belief, _ = chain(*inputs)
     goal_belief = select_goal(belief, goal_ind())
-    selection = sample_goal(goal_belief, torch.Generator().manual_seed(0))[:, -1]
+    selection = sample_categorical(goal_belief, torch.Generator().manual_seed(0))[:, -1]
     correct = goal_accuracy(
         selection[:, None], torch.randint(0, CFG.n_realizations, (N_EPISODES,))
     )[:, 0]

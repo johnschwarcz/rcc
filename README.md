@@ -1,23 +1,15 @@
 # rcc
 
-PyTorch modules implementing **Representation Classification Chains**, the
-architecture from *Factorization Regret mediates compositional generalization in
+PyTorch implemention of **Representation Classification Chains** from *Factorization Regret mediates compositional generalization in
 latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
 
-A chain separates what the world is *made of* from what is happening *right
-now*. One pathway learns how latent variables interact, trained only by how well
-it predicts observations. A second reads that representation to infer which
-variables are currently active and what values they hold. The two share a
-forward pass and no gradient.
-
+The Generator learns how latent variables interact and the classifier learns their values.
 <img src="docs/images/architecture.png" width="100%">
-
-*Left: variables own key and query embeddings, contracted into the interactions
+*Left: variables' key and query embeddings, contracted into interactions
 `Ẑ`. Centre: the classifier infers realizations from observations and `Ẑ`, the
-generator predicts observations back from them — reward trains the first,
-self-supervision the second, and the dashed arrows carry no gradient. Right: with
-the interactions learned, the generator turns preferences into a landscape the
-controller can climb.*
+generator predicts observations back from them — reward trains the classifier,
+self-supervision trains the generator and embeddings. Dashed arrows carry no gradient. Right: with
+the interactions learned, the generator turns preferences into a landscape on which a controller can be trained.*
 
 Every stage is a plain `nn.Module` that takes and returns tensors. There is no
 dependency on any particular environment, and no training loop to adopt.

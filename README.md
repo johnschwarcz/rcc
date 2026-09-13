@@ -1,6 +1,6 @@
 # rcc
 
-PyTorch implemention of **Representation Classification Chains** from *Factorization Regret mediates compositional generalization in latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
+PyTorch implementation of **Representation Classification Chains** from *Factorization Regret mediates compositional generalization in latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
 
 <img src="docs/images/architecture.png" width="100%">
 
@@ -37,7 +37,7 @@ cfg = RCCConfig(n_vars, n_contexts, n_realizations, n_observations, hidden_dim=3
 chain = RCC(cfg)
 
 belief, interaction = chain(observations, ctx_inds)
-belief.shape        # (n_episodes, n_steps, n_contexts, n_realizations) — episodes, steps, variables, realizations
+belief.shape        # (100, 30, 2, 10) — episodes, steps, variables, realizations
 ```
 
 `belief[e, t, c, r]` is how strongly the chain believes, in episode `e`, after `t` observations, that active variable `c` has realization `r`.
@@ -103,16 +103,21 @@ To *run* a chain you need a task to provide **observations**, **ctx_inds**, **te
 [coggrid](https://github.com/johnschwarcz/coggrid) can be installed with `pip install -e ".[dev]"`.
 
 ```python
+import torch
 from coggrid import CogGridConfig, World, run_observers
 from rcc import RCC, RCCConfig, supervised_loss
 
 world = World(CogGridConfig(n_vars=50, n_contexts=2, n_realizations=4,  n_observations=3, embedding_dim=30, n_steps=20))
 batch = world.sample_episodes(128, split="train")
-target_belief = run_observers(batch)["joint"].belief   # the ideal observer's belief
+
+# coggrid works in numpy, rcc in torch. run_observers gives the ideal observer's belief.
+observations = torch.as_tensor(batch.observations, dtype=torch.float32)
+ctx_inds = torch.as_tensor(batch.ctx_inds, dtype=torch.long)
+target_belief = torch.as_tensor(run_observers(batch)["joint"].belief, dtype=torch.float32)
 
 chain = RCC(RCCConfig(n_vars=50, n_contexts=2, n_realizations=4, n_observations=3, hidden_dim=32))
 optimizer = torch.optim.Adam(chain.inference_parameters(), lr=1e-3)
-belief, interaction = chain(batch.observations, batch.ctx_inds)
+belief, interaction = chain(observations, ctx_inds)
 loss = supervised_loss(belief, target_belief)
 optimizer.zero_grad()
 loss.backward()

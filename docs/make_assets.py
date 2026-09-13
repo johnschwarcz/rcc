@@ -40,7 +40,6 @@ from _common import (  # noqa: E402
     arguments,
     describe,
     draw,
-    embeddings,
     evaluate,
     progress,
     random_preferences,

@@ -52,6 +52,15 @@ jobs:
 
   examples:
     runs-on: ubuntu-latest
+    env:
+      # Headless: no display on any runner.
+      MPLBACKEND: Agg
+      # Every script pins the tuned run that made the README figures — 20k-episode
+      # batches, hidden_dim 1000 — which the runner has no memory for. The command
+      # line beats those defaults: shrink the run, not just its length.
+      SMOKE: >-
+        --iterations 20 --control-iterations 20 --evaluate-every 10
+        --batch-size 64 --eval-episodes 64 --hidden-dim 64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,15 +74,11 @@ jobs:
       - name: Run every example
         # Short runs: this checks that they execute, not that they converge.
         # tests/test_learning.py is what checks that they learn.
-        env:
-          MPLBACKEND: Agg
         # _common.py is shared plumbing, not a runnable example.
         run: |
           for f in examples/[!_]*.py; do
             echo "--- $f"
-            python "$f" --out "$RUNNER_TEMP/figures" --iterations 20
+            python "$f" --out "$RUNNER_TEMP/figures" $SMOKE
           done
       - name: Regenerate the README figures
-        env:
-          MPLBACKEND: Agg
-        run: python docs/make_assets.py --out "$RUNNER_TEMP/images" --iterations 20
+        run: python docs/make_assets.py --out "$RUNNER_TEMP/images" $SMOKE

@@ -26,8 +26,8 @@ READER_SUPPLIED = {
     "target_belief": torch.softmax(torch.randn(16, 10, 2, 4), -1),
     # Some other source of per-channel context, for the standalone classifier.
     "my_own_context_vector": torch.randn(16, 3, 2),
-    # What the controller's chosen actions turned out to be worth.
-    "rates_of_those_actions": torch.rand(16, 3),
+    # The rates the generator predicts for the controller's chosen actions.
+    "predicted_observations": torch.rand(16, 3),
     "preferences": torch.rand(3).round(),
 }
 

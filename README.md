@@ -139,13 +139,9 @@ value = intrinsic_value(predicted_observations, preferences)
 
 <img src="docs/images/policy.png" width="85%">
 
-## Example training curves
+## Example learning curves for Classifier and Generator
 
 <img src="docs/images/losses.png" width="100%">
-
-## Example generalization
-
-<img src="docs/images/training.png" width="70%">
 
 ## Citation
 

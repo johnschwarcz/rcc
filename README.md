@@ -1,29 +1,22 @@
 # rcc
 
-PyTorch implemention of **Representation Classification Chains** from *Factorization Regret mediates compositional generalization in
-latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
+PyTorch implemention of **Representation Classification Chains** from
+
+*Factorization Regret mediates compositional generalization in latent space* ([arXiv:2603.27134](https://arxiv.org/abs/2603.27134)).
+
+<img src="docs/images/architecture.png" width="100%">
+
+***Left:** variables' key and query embeddings, contracted into interactions
+`Ẑ`. **Centre:** Classifier infers realizations from observations and `Ẑ`, Generator predicts observations back from them. Reward trains the classifier,
+self-supervision trains the generator & embeddings. Dashed arrows carry no gradient. **Right:** with
+embeddings learned, a controller can be trained to maximize preferred observations.*
 
 The Generator learns how latent variables interact and the classifier learns their values.
-<img src="docs/images/architecture.png" width="100%">
-*Left: variables' key and query embeddings, contracted into interactions
-`Ẑ`. Centre: the classifier infers realizations from observations and `Ẑ`, the
-generator predicts observations back from them — reward trains the classifier,
-self-supervision trains the generator and embeddings. Dashed arrows carry no gradient. Right: with
-the interactions learned, the generator turns preferences into a landscape on which a controller can be trained.*
-
-Every stage is a plain `nn.Module` that takes and returns tensors. There is no
-dependency on any particular environment, and no training loop to adopt.
 
 ## Install
 
 ```bash
 pip install git+https://github.com/johnschwarcz/rcc
-```
-
-For the figures, add the `viz` extra:
-
-```bash
-pip install "rcc[viz] @ git+https://github.com/johnschwarcz/rcc"
 ```
 
 Requires Python 3.10+ and PyTorch 2.2+.
@@ -34,48 +27,42 @@ Requires Python 3.10+ and PyTorch 2.2+.
 import torch
 from rcc import RCC, RCCConfig
 
-cfg = RCCConfig(n_vars=50, n_contexts=2, n_realizations=4,
-                n_observations=3, hidden_dim=32)
+n_vars = 50
+n_contexts = 2
+n_realizations = 10
+n_observations = 5
+n_episodes = 100
+n_steps = 30
+
+observations = torch.rand(n_episodes, n_steps, n_observations).round()   # random observations
+ctx_inds = torch.randint(0, n_vars, (n_episodes, n_contexts))            # which variables are active
+
+cfg = RCCConfig(n_vars, n_contexts, n_realizations, n_observations, hidden_dim=32)
 chain = RCC(cfg)
 
-observations = torch.rand(16, 10, 3).round()      # (episodes, steps, channels)
-ctx_inds = torch.randint(0, 50, (16, 2))           # which variables are active
-
 belief, interaction = chain(observations, ctx_inds)
-belief.shape        # (16, 10, 2, 4) — episodes, steps, variables, realizations
+belief.shape        # (n_episodes, n_steps, n_contexts, n_realizations) — episodes, steps, variables, realizations
 ```
 
-`belief[e, t, c, r]` is how strongly the chain believes, after `t` observations
-in episode `e`, that active variable `c` has realization `r`.
+`belief[e, t, c, r]` is how strongly the chain believes, in episode `e`, after `t` observations, that active variable `c` has realization `r`.
 
 ## The four stages
 
 | Stage | Module | Reads | Produces |
 | --- | --- | --- | --- |
-| 1. Representation | `InteractionEncoder` | `ctx_inds` | one interaction per ordered pair of active variables, per channel |
-| 2. Classification | `BeliefClassifier` | observations, interactions | a belief over each active variable's realization |
-| 3. Generation | `ObservationGenerator` | a realization, interactions | predicted observation rates |
+| 1. Representation | `InteractionEncoder` | `ctx_inds` | interactions per channel |
+| 2. Classification | `BeliefClassifier` | observations, interactions | beliefs over each active variable |
+| 3. Generation | `ObservationGenerator` | realizations, interactions | predicted observation rates |
 | 4. Control | `Controller` | interactions | a distribution over joint realizations |
 
-Stage 1 holds a key and a query embedding per variable per channel. Two active
-variables interact through the dot product of one's key with the other's query,
-and since that product is asymmetric a pair contributes two numbers rather than
-one. Those numbers are all that stages 2–4 ever learn about how variables
-combine.
-
-Stage 2's readout does not emit a belief. It emits an *increment*, and the belief
-is `softmax(cumsum(increments))`. A softmax over a sum of logits is a product of
-likelihood ratios, so the network accumulates evidence multiplicatively while
-only having to learn one step of it. Nothing forces the result to be Bayesian;
-the architecture makes the Bayesian solution the easy one to represent.
+**Stage 1** holds *one key and query embedding per variable per channel*. Each pair of active
+variables interact through the dot product of their keys with the other's query,
+contributing a total of two interactions per channel.
 
 ## The seam
 
-`BeliefClassifier` detaches the interactions it is given. Classification error
-cannot travel back into the representation, so what the chain represents is
-shaped only by how well it predicts the world — never by what happens to make
-classification easier. This is a property of the gradient graph, and it is
-[tested as one](tests/test_chain.py).
+`BeliefClassifier` detaches the interactions it is given, so embeddings are trained to represent the world — not to make
+classification easier. The goal of `BeliefClassifier` is to provide useful classifications for learning to represent the world.
 
 The parameter groups follow the same split, which is what lets each objective
 have its own optimizer:

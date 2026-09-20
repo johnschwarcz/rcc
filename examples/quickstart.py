@@ -22,14 +22,14 @@ from rcc import RCC, Trainer, save_run  # noqa: E402
 
 args = arguments(
     # world and RCC:
-    n_vars= 1000, # 500,
+    n_vars= 1000,
     n_contexts=2,
     n_realizations=10,
     n_observations=5,
     embedding_dim=30,
     n_steps=30,
     # world only:
-    n_held_out_vars=100, # 50,
+    n_held_out_vars=100,
     likelihood_temp=2.0,
     likelihood_freq=1.0,
     # RCC only:
@@ -37,15 +37,15 @@ args = arguments(
     learn_embeddings=True,  # False hands RCC the world's embeddings
     # training, read off cfg by RCC and Trainer:
     seed=None,
-    classifier_lr= 5e-4,  # 1e-4,
-    generator_lr= 5e-4,  # 1e-4,
+    classifier_lr= 5e-4,
+    generator_lr= 5e-4,
     classifier_entropy_bonus=0.1,
     control_lr=5e-3,
     controller_entropy_bonus=0.05,
     device='cuda:0',  # 'auto', or None for cpu
     micro_batch=5000,  # or None for one pass
     # the loops:
-    iterations= 100000, # 50000,
+    iterations= 100000,
     batch_size=20000,
     control_iterations=2000,
     evaluate_every=250,

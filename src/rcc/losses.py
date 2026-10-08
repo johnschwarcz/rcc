@@ -69,7 +69,7 @@ def prediction_loss(predicted_rates: Tensor, observed_rates: Tensor, *,
     total = correct.sum()
     if float(total) == 0.0:
         return mean_error
-    weighted_error = (correct * error.mean(-1)).sum() / total
+    weighted_error = (correct * error.mean(-1)).sum() / total # ISSUE: multiplies by n_observations 
     return mean_error * chance + (1 - chance) * weighted_error
 
 def embedding_norm_penalty(keys: Tensor, queries: Tensor) -> Tensor:

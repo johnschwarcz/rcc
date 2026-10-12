@@ -29,7 +29,7 @@ def trained(tmp_path):
         ctx_inds=torch.randint(0, CFG.n_vars, (N_EPISODES, CFG.n_contexts),
                                generator=generator),
         goal_ind=torch.zeros(N_EPISODES, dtype=torch.long),
-        goal_value=torch.zeros(N_EPISODES, dtype=torch.long),
+        goal_val=torch.zeros(N_EPISODES, dtype=torch.long),
     )
     return chain, trainer, step, tmp_path / "run.pt"
 

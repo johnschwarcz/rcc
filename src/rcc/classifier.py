@@ -54,11 +54,11 @@ def select_goal(belief: Tensor, goal_ind: Tensor) -> Tensor:
     episodes = torch.arange(belief.shape[0], device=belief.device)
     return belief[episodes, :, goal_ind]
 
-def goal_accuracy(selection: Tensor, goal_value: Tensor) -> Tensor:
+def goal_accuracy(selection: Tensor, goal_val: Tensor) -> Tensor:
     """ Returns a float mask.
     selection: (n_episodes, n_steps)
-    goal_value: (n_episodes,)
+    goal_val: (n_episodes,)
     returns: (n_episodes, n_steps)
     """
-    require_shape("goal_value", goal_value, (selection.shape[0],))
-    return (selection == goal_value[:, None]).float()
+    require_shape("goal_val", goal_val, (selection.shape[0],))
+    return (selection == goal_val[:, None]).float()

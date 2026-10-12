@@ -103,6 +103,8 @@ if __name__ == "__main__":
                              f"there. Run without --replot first.")
         run = load_run(checkpoint)
         chain, figures = run.chain, run.artifacts
+        if "goal_value" in figures:  # runs saved before coggrid 0.3 renamed it
+            figures["goal_val"] = figures.pop("goal_value")
         print(f"replotting {checkpoint}, trained {figures['iterations']} iterations")
     else:
         world, cfg, given = world_and_config(args)
@@ -119,7 +121,7 @@ if __name__ == "__main__":
         loop = progress(args.iterations, "stages 1-3", args.progress)
         for iteration in loop:
             batch = draw(world, args.batch_size, device=chain.device)
-            step = trainer.step(batch.observations, batch.ctx_inds, batch.goal_ind, batch.goal_value)
+            step = trainer.step(batch.observations, batch.ctx_inds, batch.goal_ind, batch.goal_val)
             perfs["train"].append(step.accuracy)
             perfs["ideal"].append(batch.ideal)
             losses["classifier"].append(step.classifier_loss)
@@ -141,13 +143,13 @@ if __name__ == "__main__":
         loop = progress(args.control_iterations, "stage 4  ", args.progress)
         for iteration in loop:
             acting = draw(world, args.batch_size, device=chain.device)
-            control = trainer.control_step(acting.ctx_inds, value_landscape(acting.rates, preferences))
+            control = trainer.control_step(acting.ctx_inds, value_landscape(acting.joint_likelihood, preferences))
             loop.set_postfix({"value": f"{control.value:.3f}"})
             if loop.disable and iteration % 50 == 0:
                 print(f"  control iter {iteration:>5}  value {control.value:.3f}", flush=True)
 
         acting = draw(world, args.batch_size, device=chain.device)
-        landscape = value_landscape(acting.rates, preferences)
+        landscape = value_landscape(acting.joint_likelihood, preferences)
         with torch.no_grad():
             policy, _ = chain.controller(chain.encoder(acting.ctx_inds).score)
 
@@ -156,7 +158,7 @@ if __name__ == "__main__":
             "losses": losses,
             "belief": step.belief,
             "goal_ind": batch.goal_ind,
-            "goal_value": batch.goal_value,
+            "goal_val": batch.goal_val,
             "posterior": batch.posterior,
             "scores": scores,
             "policy": policy,
@@ -172,8 +174,8 @@ if __name__ == "__main__":
     for name, fig in (
         ("training", plot_training(figures["perfs"], smooth=25, styles={"train": (CHAIN, "-"), "test": (CHAIN, "--"), "ideal": (IDEAL, "--")})),
         ("losses", plot_losses(figures["losses"], smooth=25)),
-        ("belief_accumulation", plot_belief_accumulation(figures["belief"], figures["goal_ind"], figures["goal_value"], figures["posterior"])),
-        ("belief_average", plot_belief_average(figures["belief"], figures["goal_ind"], figures["goal_value"], figures["posterior"])),
+        ("belief_accumulation", plot_belief_accumulation(figures["belief"], figures["goal_ind"], figures["goal_val"], figures["posterior"])),
+        ("belief_average", plot_belief_average(figures["belief"], figures["goal_ind"], figures["goal_val"], figures["posterior"])),
         ("generalization", plot_generalization(figures["scores"], chance=chance)),
         ("policy", plot_policy(figures["policy"], figures["landscape"])),
     ):

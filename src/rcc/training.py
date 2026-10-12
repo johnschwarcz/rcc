@@ -83,16 +83,16 @@ class Trainer:
         device = self.chain.device
         return tuple(tensor.to(device) for tensor in tensors)
 
-    def step(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_value: Tensor) -> TrainingStep:
+    def step(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_val: Tensor) -> TrainingStep:
         """Step the inference and estimation objectives over one batch.
         observations: (n_episodes, n_steps, n_observations)
         ctx_inds: (n_episodes, n_contexts)
-        goal_ind, goal_value: (n_episodes,)
+        goal_ind, goal_val: (n_episodes,)
         returns: TrainingStep, whose belief is detached
         With ``micro_batch`` set this accumulates over slices. 
         """
-        observations, ctx_inds, goal_ind, goal_value = self._place(
-            observations, ctx_inds, goal_ind, goal_value)
+        observations, ctx_inds, goal_ind, goal_val = self._place(
+            observations, ctx_inds, goal_ind, goal_val)
         n_episodes = observations.shape[0]
         size = min(self.micro_batch or n_episodes, n_episodes)
 
@@ -104,7 +104,7 @@ class Trainer:
             cut = slice(start, min(start + size, n_episodes))
             share = (cut.stop - cut.start) / n_episodes
             classifier_loss, generator_loss, accuracy, belief = self._accumulate(
-                observations[cut], ctx_inds[cut], goal_ind[cut], goal_value[cut], share)
+                observations[cut], ctx_inds[cut], goal_ind[cut], goal_val[cut], share)
             classifier_total += classifier_loss * share
             generator_total += generator_loss * share
             accuracy_total += accuracy * share
@@ -115,7 +115,7 @@ class Trainer:
         return TrainingStep(classifier_total, generator_total, accuracy_total,
             torch.cat(beliefs))
 
-    def _accumulate(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_value: Tensor,
+    def _accumulate(self, observations: Tensor, ctx_inds: Tensor, goal_ind: Tensor, goal_val: Tensor,
             share: float) -> tuple[float, float, float, Tensor]:
         """One micro-batch, leaving its gradients accumulated on the parameters.
         share: this slice's fraction of the batch, which scales both losses so that
@@ -129,7 +129,7 @@ class Trainer:
         goal = select_goal(belief, goal_ind)
         with torch.no_grad():
             selection = sample_categorical(goal, self.generator)[:, -1]
-            correct = goal_accuracy(selection[:, None], goal_value)[:, 0]
+            correct = goal_accuracy(selection[:, None], goal_val)[:, 0]
 
         # Stage 2. No retain_graph: stage 2 reads the interactions detached, so this
         # backward never enters the graph the estimation objective walks below.
@@ -147,7 +147,7 @@ class Trainer:
             + embedding_norm_penalty(interaction.keys, interaction.queries))
             * share).backward()
 
-        accuracy = goal_accuracy(goal.detach().argmax(-1), goal_value)[:, -1].mean()
+        accuracy = goal_accuracy(goal.detach().argmax(-1), goal_val)[:, -1].mean()
         return (classifier_loss.item(), generator_loss.item(), accuracy.item(),
             belief.detach())
 

@@ -21,16 +21,16 @@ def _numpy(x) -> np.ndarray:
     return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
 
 # ---------------------------------------------------------------------- stage 2
-def plot_belief_accumulation(belief, goal_ind, goal_value, posterior=None, episode: int = 0, *,
+def plot_belief_accumulation(belief, goal_ind, goal_val, posterior=None, episode: int = 0, *,
         fig: Figure | None = None, figsize=(9.5, 3.6)) -> Figure:
     """Draw one episode's belief filling in, step by step.
     belief, posterior: (n_episodes, n_steps, n_contexts, n_realizations)
-    goal_ind, goal_value: (n_episodes,); posterior is optional, drawn alongside
+    goal_ind, goal_val: (n_episodes,); posterior is optional, drawn alongside
     returns: Figure
     """
     belief = _numpy(belief)
     goal = int(_numpy(goal_ind)[episode])
-    truth = int(_numpy(goal_value)[episode])
+    truth = int(_numpy(goal_val)[episode])
 
     panels = [("chain", belief[episode, :, goal], CHAIN)]
     if posterior is not None:
@@ -69,19 +69,19 @@ def _goal_belief(belief, goal_ind) -> np.ndarray:
     belief, goal_ind = _numpy(belief), _numpy(goal_ind)
     return belief[np.arange(belief.shape[0]), :, goal_ind]
 
-def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
+def plot_belief_average(belief, goal_ind, goal_val, posterior=None, *,
         fig: Figure | None = None, figsize=(9.0, 3.6)) -> Figure:
     """Compare the chain with the exact observer across a whole batch.
     belief, posterior: (n_episodes, n_steps, n_contexts, n_realizations)
-    goal_ind, goal_value: (n_episodes,); posterior is optional
+    goal_ind, goal_val: (n_episodes,); posterior is optional
     returns: Figure
 
     Two panels because the two say different things. Only accuracy is bounded by
     the exact observer: belief-in-truth is linear in the belief, so a sharper
     estimator scores higher on it whether or not it is more often right.
     """
-    goal_value = _numpy(goal_value)
-    episodes = np.arange(goal_value.shape[0])
+    goal_val = _numpy(goal_val)
+    episodes = np.arange(goal_val.shape[0])
     series = [("chain", _goal_belief(belief, goal_ind), CHAIN)]
     if posterior is not None:
         series.append(("exact posterior", _goal_belief(posterior, goal_ind), IDEAL))
@@ -89,9 +89,9 @@ def plot_belief_average(belief, goal_ind, goal_value, posterior=None, *,
     fig = fig or plt.figure(figsize=figsize)
     truth_ax, accuracy_ax = fig.subplots(1, 2)
     for name, goal, colour in series:
-        truth_ax.plot(goal[episodes, :, goal_value].mean(0), color=colour,
+        truth_ax.plot(goal[episodes, :, goal_val].mean(0), color=colour,
             linewidth=1.8, label=name)
-        accuracy_ax.plot((goal.argmax(-1) == goal_value[:, None]).mean(0), color=colour,
+        accuracy_ax.plot((goal.argmax(-1) == goal_val[:, None]).mean(0), color=colour,
             linewidth=1.8, label=name)
 
     chance = 1 / series[0][1].shape[-1]

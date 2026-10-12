@@ -59,9 +59,9 @@ class Batch(NamedTuple):
     observations: Tensor  # (episodes, steps, channels)
     ctx_inds: Tensor  # (episodes, contexts)
     goal_ind: Tensor  # (episodes,)
-    goal_value: Tensor  # (episodes,)
+    goal_val: Tensor  # (episodes,)
     posterior: Tensor  # (episodes, steps, contexts, realizations)
-    rates: Tensor  # (episodes, channels, *realization_shape)
+    joint_likelihood: Tensor  # (episodes, channels, *realization_shape)
     ideal: float  # joint-observer accuracy at the final step
     naive: float  # factorized-observer accuracy at the final step
 
@@ -183,15 +183,15 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     )
     task.add_argument(
         "--n-held-out-vars", type=int, default=None,
-        help="size of the held-out pool; defaults to a third of n_vars",
+        help="size of the held-out pool; defaults to max(2, n_contexts, n_vars // 3)",
     )
     task.add_argument(
         "--likelihood-temp", type=float, default=2.0,
-        help="scales the interaction potentials before the sigmoid; the paper's 2",
+        help="amplitude of coggrid's sinusoids; larger pushes the likelihood towards 0/1 (the paper's 2)",
     )
     task.add_argument(
         "--likelihood-freq", type=float, default=1.0,
-        help="periods in the sinusoidal value profile; >1 makes the map multimodal",
+        help="number of periods in each sinusoid; >1 makes the map multimodal",
     )
 
     chain = parser.add_argument_group("architecture (the chain only)")
@@ -249,11 +249,10 @@ def world_and_config(
     hidden_dim = rcc_only.pop("hidden_dim", HIDDEN_DIM)
     world_extra = {k: rcc_only.pop(k) for k in _WORLD_EXTRA if k in rcc_only}
     world_extra.setdefault("n_steps", N_STEPS)
-    # A third of the pool held out, so a "novel pair" comes from more than one
-    # variable; coggrid's default of n_vars // 10 would leave a single one, and a
-    # pair drawn from a pool of one is the same variable twice.
+    # A third of the pool held out, and at least n_contexts: coggrid's default of n_vars // 10 would
+    # leave a single variable, and coggrid refuses a held-out pool smaller than n_contexts.
     if world_extra.get("n_held_out_vars") is None:
-        world_extra["n_held_out_vars"] = max(2, shape["n_vars"] // 3)
+        world_extra["n_held_out_vars"] = max(2, shape["n_contexts"], shape["n_vars"] // 3)
     world = World(CogGridConfig(**shape, **world_extra, seed=seed))
     cfg = RCCConfig(**shape, hidden_dim=hidden_dim, seed=seed, **rcc_only)
     return world, cfg, embeddings(world, cfg)
@@ -299,10 +298,10 @@ def draw(
 ) -> Batch:
     """Sample episodes and run the ideal observers over them.
 
-    Names carry across unchanged — ``ctx_inds``, ``goal_ind``, ``goal_value``,
-    ``observations``, ``rates`` are coggrid's own — so this only converts numpy to
-    torch and attaches what the ideal observers concluded. ``ctx_vals`` is left
-    behind on purpose: it is the truth, and the chain never sees it.
+    Names carry across unchanged — ``ctx_inds``, ``goal_ind``, ``goal_val``, ``observations``
+    and ``joint_likelihood`` are coggrid's own — so this only converts numpy to torch and
+    attaches what the ideal observers concluded. ``ctx_vals`` is left behind on purpose: it
+    is the truth, and the chain never sees it.
     """
     batch = world.sample_episodes(n_episodes, split=split, rng=rng)
     traces = run_observers(batch)
@@ -317,9 +316,9 @@ def draw(
         observations=as_float(batch.observations),
         ctx_inds=as_long(batch.ctx_inds),
         goal_ind=as_long(batch.goal_ind),
-        goal_value=as_long(batch.goal_value),
+        goal_val=as_long(batch.goal_val),
         posterior=as_float(traces["joint"].belief),
-        rates=as_float(batch.rates),
+        joint_likelihood=as_float(batch.joint_likelihood),
         ideal=float(traces["joint"].accuracy[:, -1].mean()),
         naive=float(traces["naive"].accuracy[:, -1].mean()),
     )
@@ -355,9 +354,9 @@ def progress(total: int, desc: str, enabled: bool | None = None) -> tqdm:
                    "[{elapsed}<{remaining}]{postfix}")
 
 
-def accuracy(goal_belief: Tensor, goal_value: Tensor) -> float:
+def accuracy(goal_belief: Tensor, goal_val: Tensor) -> float:
     """Share of episodes whose final-step argmax matched the truth."""
-    return (goal_belief[:, -1].argmax(-1) == goal_value).float().mean().item()
+    return (goal_belief[:, -1].argmax(-1) == goal_val).float().mean().item()
 
 
 def evaluate(chain: RCC, batch: Batch) -> dict[str, float]:
@@ -373,7 +372,7 @@ def evaluate(chain: RCC, batch: Batch) -> dict[str, float]:
     with torch.no_grad():
         belief, _ = chain(batch.observations, batch.ctx_inds)
     return {
-        "chain": accuracy(select_goal(belief, batch.goal_ind), batch.goal_value),
+        "chain": accuracy(select_goal(belief, batch.goal_ind), batch.goal_val),
         "ideal": batch.ideal,
         "naive": batch.naive,
     }
@@ -392,17 +391,17 @@ def random_preferences(cfg: RCCConfig, seed: int | None = None, *,
     return drawn.to(device)
 
 
-def value_landscape(rates: Tensor, preferences: Tensor) -> Tensor:
+def value_landscape(joint_likelihood: Tensor, preferences: Tensor) -> Tensor:
     """What every joint realization is worth, given the preferences.
 
-    ``rates`` is coggrid's likelihood table, one Bernoulli rate per channel per
+    ``joint_likelihood`` is coggrid's table of ``P(obs = 1)``, one per channel per
     hypothetical joint realization.
 
-    rates: (n_episodes, n_observations, *realization_shape)
+    joint_likelihood: (n_episodes, n_observations, *realization_shape)
     preferences: (n_observations,)
     returns: (n_episodes, *realization_shape)
     """
-    n_episodes, n_observations = rates.shape[:2]
-    per_action = rates.reshape(n_episodes, n_observations, -1).transpose(1, 2)
+    n_episodes, n_observations = joint_likelihood.shape[:2]
+    per_action = joint_likelihood.reshape(n_episodes, n_observations, -1).transpose(1, 2)
     value = intrinsic_value(per_action.reshape(-1, n_observations), preferences)
-    return value.reshape(n_episodes, *rates.shape[2:])
+    return value.reshape(n_episodes, *joint_likelihood.shape[2:])

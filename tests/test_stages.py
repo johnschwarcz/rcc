@@ -130,7 +130,7 @@ def test_the_pair_is_ordered_so_swapping_the_variables_swaps_the_interactions():
 
 
 def test_a_repeated_variable_is_allowed():
-    """The same variable may be active twice, as it is in coggrid by default."""
+    """The same variable may be active twice, as coggrid allows with ``allow_repeated_vars=True``."""
     encoder = InteractionEncoder(CFG)
     score = encoder(torch.tensor([[3, 3]])).score
     assert score.shape == (1, CFG.n_observations, CFG.n_interactions)
@@ -197,7 +197,7 @@ def test_sample_categorical_is_reproducible_given_a_generator():
 
 
 def test_goal_accuracy_rejects_a_mismatched_truth():
-    with pytest.raises(ValueError, match="goal_value must have shape"):
+    with pytest.raises(ValueError, match="goal_val must have shape"):
         goal_accuracy(
             torch.zeros(3, 2, dtype=torch.long), torch.zeros(4, dtype=torch.long)
         )

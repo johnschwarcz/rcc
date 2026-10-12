@@ -34,7 +34,7 @@ def learning_chain(seed=0):
 
 
 def goal_accuracy_of(belief, batch):
-    return accuracy(select_goal(belief.detach(), batch.goal_ind), batch.goal_value)
+    return accuracy(select_goal(belief.detach(), batch.goal_ind), batch.goal_val)
 
 
 # --------------------------------------------------------------------------- #
@@ -100,7 +100,7 @@ def test_a_trained_belief_sharpens_as_evidence_arrives():
     entropy = -(goal_belief * goal_belief.clamp_min(1e-12).log()).sum(-1).mean(0)
     assert entropy[-1] < entropy[0]
 
-    correct = (goal_belief.argmax(-1) == batch.goal_value[:, None]).float().mean(0)
+    correct = (goal_belief.argmax(-1) == batch.goal_val[:, None]).float().mean(0)
     assert correct[-1] > correct[0]
 
 
@@ -139,7 +139,7 @@ def test_the_teaching_signal_does_not_break_prediction():
         batch = draw(world, 128)
         belief, interaction = chain(batch.observations, batch.ctx_inds)
         selection = select_goal(belief, batch.goal_ind)[:, -1].argmax(-1)
-        correct = (selection == batch.goal_value).float()
+        correct = (selection == batch.goal_val).float()
         rates = chain.reconstruct(
             belief, interaction, batch.goal_ind,
             goal_selection=selection, goal_correct=correct,
@@ -175,13 +175,13 @@ def test_the_controller_learns_to_prefer_valuable_actions():
         actions, log_prob, entropy = chain.controller.act(policy, rng)
 
         # coggrid's likelihood table, indexed at the joint action just taken.
-        table = batch.rates.reshape(128, cfg.n_observations, -1)
+        table = batch.joint_likelihood.reshape(128, cfg.n_observations, -1)
         flat = actions[:, 0] * cfg.n_realizations + actions[:, 1]
-        rates = table.gather(
+        likelihood = table.gather(
             -1, flat[:, None, None].expand(-1, cfg.n_observations, 1)
         ).squeeze(-1)
 
-        reward = intrinsic_value(rates, preferences)
+        reward = intrinsic_value(likelihood, preferences)
         loss = controller_loss(reward, value, log_prob, entropy)
         optimizer.zero_grad()
         loss.backward()

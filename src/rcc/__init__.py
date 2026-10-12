@@ -49,9 +49,9 @@ Layout
 Names follow `coggrid <https://github.com/johnschwarcz/coggrid>`_, the
 environment the paper used, so the two can be read side by side — though nothing
 here imports it. Config fields, ``ctx_inds``, ``ctx_vals``, ``goal_ind``,
-``goal_value``, ``observations`` and ``rates`` are all coggrid's own names, kept
-rather than reinvented. *Realization* stays the word for what a ``ctx_vals``
-holds, exactly as coggrid pairs the field with ``n_realizations``.
+``goal_val`` and ``observations`` are all coggrid's own names, kept rather than
+reinvented. *Realization* stays the word for what a ``ctx_vals`` holds, exactly
+as coggrid pairs the field with ``n_realizations``.
 """
 
 from ._helpers import resolve_device, sample_categorical

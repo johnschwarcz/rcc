@@ -64,7 +64,7 @@ evaluation = {
 loop = progress(args.iterations, "stages 1-3", args.progress)
 for iteration in loop:
     batch = draw(world, args.batch_size, device=chain.device)
-    step = trainer.step(batch.observations, batch.ctx_inds, batch.goal_ind, batch.goal_value)
+    step = trainer.step(batch.observations, batch.ctx_inds, batch.goal_ind, batch.goal_val)
     if iteration % args.evaluate_every == 0:
         test = evaluate(chain, evaluation["test"])
         loop.set_postfix({"train": f"{step.accuracy:.3f}",
@@ -75,7 +75,7 @@ preferences = random_preferences(cfg, cfg.seed, device=chain.device)
 loop = progress(args.control_iterations, "stage 4  ", args.progress)
 for _ in loop:
     acting = draw(world, args.batch_size, device=chain.device)
-    control = trainer.control_step(acting.ctx_inds, value_landscape(acting.rates, preferences))
+    control = trainer.control_step(acting.ctx_inds, value_landscape(acting.joint_likelihood, preferences))
     loop.set_postfix({"value": f"{control.value:.3f}"})
 
 scores = {split: evaluate(chain, episodes) for split, episodes in evaluation.items()}

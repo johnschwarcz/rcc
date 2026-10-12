@@ -26,7 +26,7 @@ def batch(device=None, n_episodes=N_EPISODES):
         ctx_inds=torch.randint(0, CFG.n_vars, (n_episodes, CFG.n_contexts),
                                generator=generator).to(device),
         goal_ind=torch.zeros(n_episodes, dtype=torch.long, device=device),
-        goal_value=torch.zeros(n_episodes, dtype=torch.long, device=device),
+        goal_val=torch.zeros(n_episodes, dtype=torch.long, device=device),
     )
 
 

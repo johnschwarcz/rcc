@@ -35,7 +35,8 @@ viz = ["matplotlib>=3.7", "numpy>=1.24"]
 # development dependency rather than a runtime one.
 dev = [
   "rcc[viz]",
-  "coggrid @ git+https://github.com/johnschwarcz/coggrid",
+  # 0.3 renamed the batch fields the examples read (goal_val, joint_likelihood).
+  "coggrid>=0.3",
   "tqdm>=4.66",
   # tqdm.auto draws a real widget in a notebook or an interactive console, and
   # falls back to a warning and plain text without this.
@@ -52,11 +53,6 @@ Environment = "https://github.com/johnschwarcz/coggrid"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rcc"]
-
-[tool.hatch.metadata]
-# coggrid installs from git rather than PyPI, which hatchling refuses to record
-# unless direct references are opted into.
-allow-direct-references = true
 
 [tool.pytest.ini_options]
 # src is on the list so the docstring examples are executed, not just written.

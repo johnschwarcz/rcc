@@ -27,7 +27,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without the extra
     raise SystemExit(
         "The examples need coggrid:\n"
-        "    pip install git+https://github.com/johnschwarcz/coggrid"
+        "    pip install coggrid"
     ) from None
 
 Split = Literal["train", "held_out"]

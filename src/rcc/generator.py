@@ -7,7 +7,16 @@ from .config import RCCConfig
 __all__ = ["ObservationGenerator", "query_from_belief"]
 
 class ObservationGenerator(nn.Module):
-    """Predict each channel conditioned on a joint realization."""
+    """Predict each channel conditioned on a joint realization.
+
+    This is a fixed version of the paper's Generator. Each stream — realization,
+    confidence, interactions — is layer-normed before they are summed, a skip carries
+    the sum past ``hidden``, and ``interaction_proj`` starts along the directions
+    ``rate`` reads, so the interactions move the rates from the start. The paper's
+    version, trained alone, often collapsed instead: channels left unused, chance on
+    novel environments. ``cfg.legacy_generator`` rebuilds it, along with the init of
+    stage 1's key/query projections, the fix's other half (see InteractionEncoder).
+    """
 
     def __init__(self, cfg: RCCConfig) -> None:
         super().__init__()
@@ -19,6 +28,24 @@ class ObservationGenerator(nn.Module):
             self.confidence_proj = nn.Linear(cfg.n_contexts, cfg.hidden_dim)
             self.hidden = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
             self.rate = nn.Linear(cfg.hidden_dim, 1)
+            if not cfg.legacy_generator:
+                # Last, and drawing nothing, so the layers above start as the legacy build's.
+                self.realization_norm = nn.LayerNorm(cfg.hidden_dim)
+                self.confidence_norm = nn.LayerNorm(cfg.hidden_dim)
+                self.interaction_norm = nn.LayerNorm(cfg.hidden_dim)
+                self._aim_interactions_at_the_rate()
+
+    @torch.no_grad()
+    def _aim_interactions_at_the_rate(self) -> None:
+        """Point each interaction at what ``rate`` reads: ``w`` through the skip, or
+        ``hidden.T @ w`` through ``hidden``, alternating so that a pair's two
+        interactions get one each. Rescaled to the default init's norm.
+        """
+        weight = self.interaction_proj.weight
+        w = self.rate.weight[0].double()
+        v = self.hidden.weight.double().T @ w
+        directions = torch.stack([(w, v)[j % 2] for j in range(self.cfg.n_interactions)], dim=1)
+        weight.copy_((directions * (weight.norm() / directions.norm())).to(weight.dtype))
 
     def forward(self, ctx_vals: Tensor, confidence: Tensor, interactions: Tensor) -> Tensor:
         """Predict observation rates for a proposed realization.
@@ -34,9 +61,15 @@ class ObservationGenerator(nn.Module):
         believed = self.confidence_proj(confidence).unsqueeze(1)
         structure = self.interaction_proj(interactions)
 
-        mixed = torch.relu(proposal + believed + structure)
-        hidden = torch.relu(self.hidden(mixed))
-        return torch.sigmoid(self.rate(hidden)).squeeze(-1)
+        if self.cfg.legacy_generator:
+            mixed = torch.relu(proposal + believed + structure)
+            hidden = torch.relu(self.hidden(mixed))
+            return torch.sigmoid(self.rate(hidden)).squeeze(-1)
+
+        mixed = (self.realization_norm(proposal) + self.confidence_norm(believed)
+            + self.interaction_norm(structure))
+        hidden = self.hidden(torch.relu(mixed))
+        return torch.sigmoid(self.rate(torch.relu(mixed + hidden))).squeeze(-1)
 
     def _check(self, ctx_vals: Tensor, confidence: Tensor, interactions: Tensor) -> None:
         cfg = self.cfg

@@ -11,10 +11,16 @@ loops, the reshapes, the argument order — and every stage is checked against i
 with shared weights. When these tests pass, the two implementations are the same
 function of the same inputs. Where behaviour *was* deliberately changed, there is
 a test here saying so.
+
+Stage 3 is transcribed twice. The original has since moved to a fixed Generator
+(``gen_zflow``), and both are built here: the fixed one by default, the paper's
+with ``legacy_generator=True``. The fixed one's initialization is transcribed too,
+since there the starting point is part of the fix.
 """
 
 import pytest
 import torch
+from torch import nn
 from rcc import (
     BeliefClassifier,
     Controller,
@@ -171,7 +177,8 @@ def test_belief_is_the_softmax_of_a_running_sum(batch):
 # stage 3 — Model_forward.get_prediction
 # --------------------------------------------------------------------------- #
 def original_get_prediction(m, sample, conf, active_Z):
-    """Transcribed from ``Model_forward.get_prediction``."""
+    """Transcribed from ``Model_forward.get_prediction``, as the paper's first
+    version ran it."""
     n_episodes = sample.shape[0]
     sample_emb = m.realization_embedding(sample).reshape(n_episodes, -1)
     s = m.realization_proj(sample_emb).unsqueeze(1)
@@ -184,25 +191,114 @@ def original_get_prediction(m, sample, conf, active_Z):
 
 
 def test_generator_matches(batch):
-    generator = ObservationGenerator(CFG)
-    encoder = InteractionEncoder(CFG, keys=batch["keys"], queries=batch["queries"])
+    cfg = CFG.replace(legacy_generator=True)
+    generator = ObservationGenerator(cfg)
+    encoder = InteractionEncoder(cfg, keys=batch["keys"], queries=batch["queries"])
     interactions = encoder(batch["ctx_inds"]).score
-    ctx_vals = torch.randint(0, CFG.n_realizations, (5, CFG.n_contexts))
-    confidence = torch.rand(5, CFG.n_contexts)
+    ctx_vals = torch.randint(0, cfg.n_realizations, (5, cfg.n_contexts))
+    confidence = torch.rand(5, cfg.n_contexts)
 
     mine = generator(ctx_vals, confidence, interactions)
     theirs = original_get_prediction(generator, ctx_vals, confidence, interactions)
     assert torch.allclose(mine, theirs, atol=1e-6)
 
 
-def test_generator_keeps_a_single_channel_axis():
+def zflow_get_prediction(m, sample, conf, active_Z):
+    """Transcribed from ``Model_forward.get_prediction`` with ``gen_zflow``, and
+    ``get_layer_norm``."""
+    gen_stream_norm = (m.realization_norm, m.confidence_norm, m.interaction_norm)
+
+    def get_layer_norm(norm, inps):
+        return (n(v) for n, v in zip(norm, inps, strict=True))
+
+    n_episodes = sample.shape[0]
+    sample_emb = m.realization_embedding(sample).reshape(n_episodes, -1)
+    s = m.realization_proj(sample_emb).unsqueeze(1)
+    c = m.confidence_proj(conf).unsqueeze(1)
+    z = m.interaction_proj(active_Z)
+    s, c, z = get_layer_norm(gen_stream_norm, (s, c, z))
+
+    pre = s + c + z
+    x = m.hidden(torch.relu(pre))
+    x = m.rate(torch.relu(pre + x))
+    return torch.sigmoid(x).squeeze()
+
+
+@pytest.mark.parametrize("n_contexts", [1, 2, 3])
+def test_fixed_generator_matches(batch, n_contexts):
+    cfg = CFG.replace(n_contexts=n_contexts)
+    generator = ObservationGenerator(cfg)
+    # Off their identity init, so a norm on the wrong stream cannot go unnoticed.
+    with torch.no_grad():
+        for norm in (generator.realization_norm, generator.confidence_norm,
+                     generator.interaction_norm):
+            norm.weight.normal_()
+            norm.bias.normal_()
+    encoder = InteractionEncoder(cfg, keys=batch["keys"], queries=batch["queries"])
+    interactions = encoder(torch.randint(0, cfg.n_vars, (5, n_contexts))).score
+    ctx_vals = torch.randint(0, cfg.n_realizations, (5, n_contexts))
+    confidence = torch.rand(5, n_contexts)
+
+    mine = generator(ctx_vals, confidence, interactions)
+    theirs = zflow_get_prediction(generator, ctx_vals, confidence, interactions)
+    assert torch.allclose(mine, theirs, atol=1e-6)
+
+
+def original_oracle_readin(W, B, norm_dims):
+    """Transcribed from ``Model_architecture.oracle_readin``."""
+    with torch.no_grad():
+        W.copy_((B * (W.norm() / B.norm())).to(W.dtype))
+    return nn.ModuleList([nn.LayerNorm(d) for d in norm_dims])
+
+
+def original_zflow_init(encoder, generator, cfg):
+    """Transcribed from the ``gen_zflow`` branches of
+    ``Model_architecture.default_generator``."""
+    hid_dim, KQ_dim, Z_num = cfg.hidden_dim, cfg.embedding_dim, cfg.n_interactions
+    for L in (encoder.key_proj, encoder.query_proj):
+        nn.init.orthogonal_(L.weight, gain=(hid_dim / KQ_dim)**0.5)
+        nn.init.zeros_(L.bias)
+
+    Wo = generator.rate.weight[0].double()
+    dirs = (Wo, generator.hidden.weight.double().T @ Wo)
+    B = torch.stack([dirs[j % 2] for j in range(Z_num)], dim=1)
+    return original_oracle_readin(generator.interaction_proj.weight, B, [hid_dim] * 3)
+
+
+@pytest.mark.parametrize("n_contexts", [1, 2, 3])
+def test_fixed_init_is_the_original_applied_to_a_legacy_build(n_contexts):
+    cfg = CFG.replace(n_contexts=n_contexts, learn_embeddings=True)
+    legacy = cfg.replace(legacy_generator=True)
+
+    # The key/query init draws straight after the layers, inside the encoder's
+    # seeded block. So the legacy encoder is built unseeded on a stream seeded by
+    # hand, as seeded() seeds it, and the init draws on from where it left off;
+    # the generator's seeded block puts the stream back on its way out.
+    torch.manual_seed(cfg.seed)
+    encoder = InteractionEncoder(legacy.replace(seed=None))
+    generator = ObservationGenerator(legacy)
+    gen_stream_norm = original_zflow_init(encoder, generator, cfg)
+
+    transcribed = dict(generator.state_dict())
+    for stream, norm in zip(("realization_norm", "confidence_norm", "interaction_norm"),
+                            gen_stream_norm, strict=True):
+        transcribed.update({f"{stream}.{k}": v for k, v in norm.state_dict().items()})
+    for mine, theirs in ((ObservationGenerator(cfg).state_dict(), transcribed),
+                         (InteractionEncoder(cfg).state_dict(), encoder.state_dict())):
+        assert mine.keys() == theirs.keys()
+        for name, tensor in mine.items():
+            assert torch.equal(tensor, theirs[name]), name
+
+
+@pytest.mark.parametrize("legacy_generator", [False, True])
+def test_generator_keeps_a_single_channel_axis(legacy_generator):
     """A deliberate change: ``.squeeze()`` became ``.squeeze(-1)``.
 
     The original collapsed every length-one axis, so one observation channel
     (or one episode) silently lost a dimension. Shape now depends only on the
     inputs' meaning, never on their size.
     """
-    cfg = CFG.replace(n_observations=1)
+    cfg = CFG.replace(n_observations=1, legacy_generator=legacy_generator)
     generator = ObservationGenerator(cfg)
     rates = generator(
         torch.zeros(4, cfg.n_contexts, dtype=torch.long),

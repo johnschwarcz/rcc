@@ -27,6 +27,17 @@ def test_rejects_bool_as_a_size():
         RCCConfig(hidden_dim=True)
 
 
+def test_the_fixed_generator_is_the_default():
+    assert RCCConfig().legacy_generator is False
+
+
+@pytest.mark.parametrize("bad", [0, 1, "False", None])
+def test_rejects_a_legacy_generator_that_is_not_a_bool(bad):
+    """``"False"`` is truthy, so a flag passed through as a string would flip it."""
+    with pytest.raises(ValueError, match="legacy_generator"):
+        RCCConfig(legacy_generator=bad)
+
+
 @pytest.mark.parametrize(
     "n_contexts,expected", [(1, 1), (2, 2), (3, 6), (4, 12)]
 )

@@ -73,6 +73,40 @@ def test_a_reloaded_chain_predicts_exactly_what_it_predicted_before(trained):
     assert torch.equal(before, after)
 
 
+def predicted_rates(chain):
+    """Stage 3 on pinned inputs, with its realization draws pinned too."""
+    generator = torch.Generator().manual_seed(1)
+    observations = torch.rand(N_EPISODES, N_STEPS, CFG.n_observations,
+                              generator=generator).round()
+    ctx_inds = torch.randint(0, CFG.n_vars, (N_EPISODES, CFG.n_contexts), generator=generator)
+    with torch.no_grad():
+        belief, interaction = chain(observations, ctx_inds)
+        return chain.reconstruct(belief, interaction, torch.zeros(N_EPISODES, dtype=torch.long),
+                                 generator=torch.Generator().manual_seed(2))
+
+
+def test_a_new_run_comes_back_with_the_fixed_generator(trained):
+    chain, trainer, _, path = trained
+    save_run(path, chain, trainer=trainer)
+    restored = load_run(path).chain
+    assert restored.cfg.legacy_generator is False
+    assert torch.equal(predicted_rates(restored), predicted_rates(chain))
+
+
+def test_a_run_from_rcc_0_1_0_comes_back_with_the_generator_it_trained(tmp_path):
+    """Its config predates ``legacy_generator``; its Generator is the legacy one."""
+    chain = RCC(CFG.replace(legacy_generator=True))
+    path = tmp_path / "old.pt"
+    save_run(path, chain)
+    saved = torch.load(path, map_location="cpu", weights_only=True)
+    del saved["cfg"]["legacy_generator"]  # as rcc 0.1.0 wrote it
+    torch.save(saved, path)
+
+    for restored in (load_run(path).chain, RCC.load(path)):
+        assert restored.cfg == chain.cfg
+        assert torch.equal(predicted_rates(restored), predicted_rates(chain))
+
+
 def test_resuming_restores_the_optimizer_moments(trained):
     """Adam without its moments is not a resumed run, it is a cold restart."""
     chain, trainer, _, path = trained

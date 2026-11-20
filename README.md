@@ -65,7 +65,7 @@ Embeddings are trained to represent the world — not to make classification eas
 The goal of `BeliefClassifier` is to provide useful classifications for learning to represent the world.
 
 `ObservationGenerator` is a fixed version of the paper's Generator: each of its input streams is layer-normed, a skip runs past its hidden layer, and its interaction weights start along the directions its readout reads; `InteractionEncoder`'s learned key/query projections start orthogonal to match.
-`legacy_generator=True` rebuilds the paper's original, which is also what a checkpoint saved before the flag existed (rcc 0.1.0 as released) loads as.
+`legacy_generator=True` rebuilds the paper's original, which is also what a checkpoint saved before the flag existed (rcc 0.1.0) loads as.
 
 ## Configuration
 

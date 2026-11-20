@@ -31,6 +31,7 @@ def ordered_pairs(n_contexts: int) -> list[tuple[int, int]]:
 class InteractionEncoder(nn.Module):
     """Active variables' embeddings --> pairwise scores.
     learned keys, queries: (n_vars, n_observations, hidden_dim) are projected to embedding_dim.
+    The projections start orthogonal, part of the fixed Generator; cfg.legacy_generator --> nn.Linear's default.
     cfg.learn_embeddings = False --> supply keys, queries: (n_vars, n_observations, embedding_dim)
     """
     # Declared so that a type checker knows these are tensors.
@@ -51,6 +52,14 @@ class InteractionEncoder(nn.Module):
                 self.queries = nn.Parameter(_unit_rows(torch.randn(raw)))
                 self.key_proj = nn.Linear(cfg.hidden_dim, cfg.embedding_dim)
                 self.query_proj = nn.Linear(cfg.hidden_dim, cfg.embedding_dim)
+                if not cfg.legacy_generator:
+                    # Part of the fixed Generator: orthogonal at this gain, a unit-norm
+                    # hidden_dim key is still about unit norm once projected (when
+                    # hidden_dim >= embedding_dim, as by default; below that, it is the gain).
+                    gain = (cfg.hidden_dim / cfg.embedding_dim) ** 0.5
+                    for proj in (self.key_proj, self.query_proj):
+                        nn.init.orthogonal_(proj.weight, gain=gain)
+                        nn.init.zeros_(proj.bias)
         else:
             if keys is None or queries is None:
                 raise ValueError("keys/queries must be supplied when cfg.learn_embeddings is False.")

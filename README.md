@@ -64,6 +64,9 @@ contributing a total of two interactions per channel.
 Embeddings are trained to represent the world — not to make classification easier. 
 The goal of `BeliefClassifier` is to provide useful classifications for learning to represent the world.
 
+`ObservationGenerator` is a fixed version of the paper's Generator: each of its input streams is layer-normed, a skip runs past its hidden layer, and its interaction weights start along the directions its readout reads; `InteractionEncoder`'s learned key/query projections start orthogonal to match.
+`legacy_generator=True` rebuilds the paper's original, which is also what a checkpoint saved before the flag existed (rcc 0.1.0) loads as.
+
 ## Configuration
 
 | Field | Default | Meaning |
@@ -75,6 +78,7 @@ The goal of `BeliefClassifier` is to provide useful classifications for learning
 | `embedding_dim` | `30` | Dimensionality of the key/query embeddings that are contracted into interactions. |
 | `hidden_dim` | `1000` | Width of every hidden layer. |
 | `learn_embeddings` | `True` | Whether embeddings are learned. `False` requires you to supply them. |
+| `legacy_generator` | `False` | Rebuild stage 3, and the init of stage 1's key/query projections, as the paper originally had them. `False` is the fixed Generator. |
 | `seed` | `None` | Seed for initialization and sampling. |
 | `device` | `None` | `None` stays on the cpu, `'auto'` takes cuda when it is available, or provide explicitly, e.g. `'cuda:0'`. |
 | `classifier_lr` | `0.001` | Adam learning rate for the inference objective. |

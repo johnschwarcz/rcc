@@ -27,6 +27,10 @@ class RCCConfig:
         Width of every hidden layer.
     learn_embeddings:
         Whether stage 1's embeddings are learned. ``False`` means you supply them.
+    legacy_generator:
+        Rebuild stage 3, and the init of stage 1's key/query projections, as the
+        paper originally had them. ``False`` is the fixed Generator; see
+        :class:`rcc.ObservationGenerator`.
     seed:
         Seed for parameter initialization and a Trainer's sampling, or ``None`` 
     device:
@@ -55,6 +59,7 @@ class RCCConfig:
     embedding_dim: int = 30
     hidden_dim: int = 1000
     learn_embeddings: bool = True
+    legacy_generator: bool = False
     seed: int | None = None
 
     # ----------------------------------------------------- where and how it runs
@@ -73,6 +78,10 @@ class RCCConfig:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive int, got {value!r}")
+
+        if not isinstance(self.legacy_generator, bool):
+            raise ValueError(
+                f"legacy_generator must be a bool, got {self.legacy_generator!r}")
 
         for name in ("classifier_lr", "control_lr"):
             self._require_positive_float(name, getattr(self, name))

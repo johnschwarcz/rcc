@@ -75,8 +75,8 @@ _WORLD_EXTRA = ("n_steps", "n_held_out_vars", "likelihood_temp", "likelihood_fre
 #: What :func:`arguments` collects that ends up inside :class:`RCCConfig` — the
 #: task, the architecture, and how the chain is trained. All of it reaches the
 #: config, so ``RCC(cfg)`` and ``Trainer(chain)`` need nothing else spelled out.
-_SETTINGS = (*SHAPE, *_WORLD_EXTRA, "hidden_dim", "learn_embeddings", "seed",
-             "device", "micro_batch", "classifier_lr", "generator_lr", "control_lr",
+_SETTINGS = (*SHAPE, *_WORLD_EXTRA, "hidden_dim", "learn_embeddings", "legacy_generator",
+             "seed", "device", "micro_batch", "classifier_lr", "generator_lr", "control_lr",
              "classifier_entropy_bonus", "controller_entropy_bonus")
 #: Everything else it collects — how many times to go round each loop, how often to
 #: measure, and where to put the output. These belong to the script's loops rather
@@ -199,6 +199,11 @@ def arguments(**defaults: Any) -> argparse.Namespace:
     chain.add_argument(
         "--learn-embeddings", action=argparse.BooleanOptionalAction, default=False,
         help="stage 1 finds the representation; the default hands it the world's",
+    )
+    chain.add_argument(
+        "--legacy-generator", action=argparse.BooleanOptionalAction, default=False,
+        help="stage 3, and stage 1's key/query projection init, as the paper "
+             "originally built them; the default is the fixed Generator",
     )
 
     stage4 = parser.add_argument_group("control (stage 4, where a script trains one)")

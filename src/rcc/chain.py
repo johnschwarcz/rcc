@@ -71,8 +71,10 @@ class RCC(nn.Module):
         """Rebuild from an already-read payload of ``{"cfg": ..., "state": ...}``.
         Split out from :meth:`load` so that a checkpoint carrying more than a chain —
         see :func:`rcc.save_run` — reconstructs it exactly the same way.
+        A config without ``legacy_generator`` predates it — rcc 0.1.0 —
+        and that Generator is the legacy one, so it comes back as one.
         """
-        cfg = RCCConfig(**saved["cfg"])
+        cfg = RCCConfig(**{"legacy_generator": True, **saved["cfg"]})
         placeholder = {}
         if not cfg.learn_embeddings:
             shape = (cfg.n_vars, cfg.n_observations, cfg.embedding_dim)

@@ -125,8 +125,32 @@ def test_prediction_error_trains_the_embeddings():
         optimizer.step()
         losses.append(loss.item())
 
-    assert sum(losses[-20:]) / 20 < sum(losses[:20]) / 20 * 0.6
+    # The fixed Generator starts lower: its key/query projections keep the norm
+    # penalty small from the first step. Across seeds and batches its last twenty
+    # steps were 0.63-0.78 of its first twenty (legacy: 0.40-0.45, from twice as
+    # high, and nearly all of that the penalty decaying).
+    assert sum(losses[-20:]) / 20 < sum(losses[:20]) / 20 * 0.85
     assert not torch.allclose(chain.encoder.keys.detach(), before, atol=1e-4)
+
+    # Neither of those needs prediction error to reach the embeddings: a Generator
+    # ignoring the interactions still descends, and the penalty alone moves the keys.
+    # What it adds is a Generator resting on what the embeddings learned: handed
+    # another episode's interactions, it predicts worse. Measured 0.10-0.16 worse;
+    # under 0.01 for a chain whose embeddings never learned or whose Generator
+    # ignores them, and for the legacy Generator.
+    batch = draw(world, 512, rng=1)
+    with torch.no_grad():
+        belief, interaction = chain(batch.observations, batch.ctx_inds)
+        shuffled = interaction._replace(score=interaction.score.roll(1, 0))
+        own, other = (
+            prediction_loss(
+                chain.reconstruct(belief, handed, batch.goal_ind,
+                                  generator=torch.Generator().manual_seed(0)),
+                batch.observations.mean(1),
+            )
+            for handed in (interaction, shuffled)
+        )
+    assert other > own + 0.05
 
 
 def test_the_teaching_signal_does_not_break_prediction():
